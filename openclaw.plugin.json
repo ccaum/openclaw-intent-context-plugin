@@ -1,0 +1,65 @@
+{
+  "id": "intent-context",
+  "name": "Intent Context",
+  "description": "Injects relevant intents, recent domain events, and ambient cross-agent activity into each configured agent's turn (before_prompt_build), and executes mechanical notify-type triggered intents directly. No active wake of any agent — everything surfaces on whatever turn happens next.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "intentsDir": {
+        "type": "string",
+        "description": "Path to the shared intents store. Defaults to ~/.openclaw/intents."
+      },
+      "agents": {
+        "type": "object",
+        "description": "Per-agent awareness config, keyed by agentId.",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "watchedTriggerTypes": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "actorFor": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "eventDomains": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "ambientScope": {
+              "anyOf": [
+                { "type": "string", "const": "all" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            }
+          }
+        }
+      },
+      "notifyExecutorIntervalMs": {
+        "type": "number",
+        "description": "Poll interval for the mechanical notify executor. Default 60000."
+      },
+      "recentEventsWindowMs": {
+        "type": "number",
+        "description": "How far back to surface recent-events entries. Default 24h."
+      },
+      "recentActivityWindowMs": {
+        "type": "number",
+        "description": "How far back to surface ambient-activity entries. Default 6h."
+      }
+    },
+    "required": ["agents"]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "log_activity"
+    ]
+  }
+}
