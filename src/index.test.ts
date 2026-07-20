@@ -254,6 +254,74 @@ describe("runNotifyExecutor", () => {
     expect(lockExists).toBe(false);
   });
 
+  it("uses config-overridden openclawBin path", async () => {
+    await fs.writeFile(
+      paths.pendingPath,
+      JSON.stringify([
+        {
+          id: "g1",
+          status: "triggered",
+          description: "custom bin test",
+          action: { type: "notify", channel: "bluebubbles", target: "carl", message_template: "Hi" },
+          trigger_data: {},
+        },
+      ]),
+    );
+    await fs.writeFile(paths.archivePath, JSON.stringify([]));
+
+    await runNotifyExecutor(paths, { openclawBin: "/custom/path/openclaw" });
+
+    expect(execFileCalls).toHaveLength(1);
+    expect(execFileCalls[0].cmd).toBe("/custom/path/openclaw");
+  });
+
+  it("uses config-overridden fallbackNotifyChannel when action.channel is unset", async () => {
+    await fs.writeFile(
+      paths.pendingPath,
+      JSON.stringify([
+        {
+          id: "h1",
+          status: "triggered",
+          description: "fallback channel test",
+          action: { type: "notify", target: "carl", message_template: "Hi" },
+          trigger_data: {},
+        },
+      ]),
+    );
+    await fs.writeFile(paths.archivePath, JSON.stringify([]));
+
+    await runNotifyExecutor(paths, { fallbackNotifyChannel: "discord" });
+
+    expect(execFileCalls).toHaveLength(1);
+    const channelArg = execFileCalls[0].args[execFileCalls[0].args.indexOf("--channel") + 1];
+    expect(channelArg).toBe("discord");
+
+    const pending = JSON.parse(await fs.readFile(paths.pendingPath, "utf8"));
+    expect(pending[0].completion_result).toContain("discord");
+  });
+
+  it("defaults to bluebubbles fallback channel when neither config nor action.channel is set", async () => {
+    await fs.writeFile(
+      paths.pendingPath,
+      JSON.stringify([
+        {
+          id: "i1",
+          status: "triggered",
+          description: "default fallback test",
+          action: { type: "notify", target: "carl", message_template: "Hi" },
+          trigger_data: {},
+        },
+      ]),
+    );
+    await fs.writeFile(paths.archivePath, JSON.stringify([]));
+
+    await runNotifyExecutor(paths);
+
+    expect(execFileCalls).toHaveLength(1);
+    const channelArg = execFileCalls[0].args[execFileCalls[0].args.indexOf("--channel") + 1];
+    expect(channelArg).toBe("bluebubbles");
+  });
+
   it("surfaces lock-acquisition failure via openclaw message send when lock is not stale", async () => {
     // Create a fresh (non-stale) lock that persists through all retries.
     await fs.mkdir(paths.lockDir);

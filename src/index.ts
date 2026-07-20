@@ -9,14 +9,14 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// Resolved absolute path — avoids depending on the gateway process's PATH.
-const OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
-
+// Default values — all overridable via configSchema.
+const DEFAULT_OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
 const DEFAULT_NOTIFY_INTERVAL_MS = 60_000;
 const DEFAULT_EVENTS_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_LOG_RETENTION_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_FALLBACK_NOTIFY_CHANNEL = "bluebubbles";
 const LOCK_STALE_MS = 5 * 60 * 1000; // 5 minutes
 const LOCK_RETRY_COUNT = 5;
 const LOCK_RETRY_DELAY_MS = 1000;
@@ -46,6 +46,9 @@ export const ConfigSchema = Type.Object(
     notifyExecutorIntervalMs: Type.Optional(Type.Number({ description: "Poll interval for the mechanical notify executor. Default 60000." })),
     recentEventsWindowMs: Type.Optional(Type.Number({ description: "How far back to surface recent-events entries. Default 24h." })),
     recentActivityWindowMs: Type.Optional(Type.Number({ description: "How far back to surface ambient-activity entries. Default 6h." })),
+    openclawBin: Type.Optional(Type.String({ description: "Path to the openclaw CLI binary. Default /opt/homebrew/bin/openclaw." })),
+    fallbackNotifyChannel: Type.Optional(Type.String({ description: "Channel used when an intent's action.channel is unset. Default bluebubbles." })),
+    logRetentionMs: Type.Optional(Type.Number({ description: "Retention window for pruning recent-events.jsonl and recent-activity.jsonl. Default 48h." })),
   },
   { additionalProperties: false },
 );
@@ -311,7 +314,12 @@ export interface NotifyExecutorResult {
 // updating status in place in whichever file the intent was found, not
 // moving pending -> archive), just running as plugin code instead of an
 // LLM-backed cron turn.
-export async function runNotifyExecutor(paths: IntentPaths): Promise<NotifyExecutorResult> {
+export async function runNotifyExecutor(
+  paths: IntentPaths,
+  opts?: { openclawBin?: string; fallbackNotifyChannel?: string },
+): Promise<NotifyExecutorResult> {
+  const openclawBin = opts?.openclawBin ?? DEFAULT_OPENCLAW_BIN;
+  const fallbackChannel = opts?.fallbackNotifyChannel ?? DEFAULT_FALLBACK_NOTIFY_CHANNEL;
   return withIntentsLock(
     paths.lockDir,
     async () => {
@@ -325,11 +333,12 @@ export async function runNotifyExecutor(paths: IntentPaths): Promise<NotifyExecu
           const template = typeof item.action.message_template === "string" ? item.action.message_template : "";
           const rendered = renderTemplate(template, item.trigger_data ?? {});
           const message = rendered.trim().length > 0 ? rendered : item.description ?? "";
-          const args = ["message", "send", "--channel", item.action.channel ?? "bluebubbles", "-m", message];
+          const channel = item.action.channel ?? fallbackChannel;
+          const args = ["message", "send", "--channel", channel, "-m", message];
           if (item.action.target) args.push("--target", String(item.action.target));
           try {
-            await execFileAsync(OPENCLAW_BIN, args, { timeout: 30000 });
-            item.completion_result = `Notification sent via ${item.action.channel ?? "bluebubbles"} to ${item.action.target ?? "default"}`;
+            await execFileAsync(openclawBin, args, { timeout: 30000 });
+            item.completion_result = `Notification sent via ${channel} to ${item.action.target ?? "default"}`;
           } catch (error) {
             item.completion_result = `Failed to send notification: ${error instanceof Error ? error.message : String(error)}`;
           }
@@ -347,8 +356,8 @@ export async function runNotifyExecutor(paths: IntentPaths): Promise<NotifyExecu
         // Surface persistent lock-acquisition failure so it doesn't silently deadlock.
         try {
           await execFileAsync(
-            OPENCLAW_BIN,
-            ["message", "send", "--channel", "bluebubbles", "-m", `[intent-context] ${errorMsg}`],
+            openclawBin,
+            ["message", "send", "--channel", fallbackChannel, "-m", `[intent-context] ${errorMsg}`],
             { timeout: 15000 },
           );
         } catch {
@@ -396,12 +405,17 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
     api.on("gateway_start", async () => {
       await fs.mkdir(paths.intentsDir, { recursive: true });
       const intervalMs = config.notifyExecutorIntervalMs ?? DEFAULT_NOTIFY_INTERVAL_MS;
+      const logRetentionMs = config.logRetentionMs ?? DEFAULT_LOG_RETENTION_MS;
+      const executorOpts = {
+        openclawBin: config.openclawBin ?? DEFAULT_OPENCLAW_BIN,
+        fallbackNotifyChannel: config.fallbackNotifyChannel ?? DEFAULT_FALLBACK_NOTIFY_CHANNEL,
+      };
       intervalHandle = setInterval(() => {
-        runNotifyExecutor(paths).catch((error) => {
+        runNotifyExecutor(paths, executorOpts).catch((error) => {
           console.error("[intent-context] notify executor error", error);
         });
-        pruneLogFile(paths.eventsLogPath, DEFAULT_LOG_RETENTION_MS).catch(() => {});
-        pruneLogFile(paths.activityLogPath, DEFAULT_LOG_RETENTION_MS).catch(() => {});
+        pruneLogFile(paths.eventsLogPath, logRetentionMs).catch(() => {});
+        pruneLogFile(paths.activityLogPath, logRetentionMs).catch(() => {});
       }, intervalMs);
     });
     api.on("gateway_stop", async () => {

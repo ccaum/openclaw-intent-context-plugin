@@ -50,6 +50,18 @@
       "recentActivityWindowMs": {
         "type": "number",
         "description": "How far back to surface ambient-activity entries. Default 6h."
+      },
+      "openclawBin": {
+        "type": "string",
+        "description": "Path to the openclaw CLI binary. Default /opt/homebrew/bin/openclaw."
+      },
+      "fallbackNotifyChannel": {
+        "type": "string",
+        "description": "Channel used when an intent's action.channel is unset. Default bluebubbles."
+      },
+      "logRetentionMs": {
+        "type": "number",
+        "description": "Retention window for pruning recent-events.jsonl and recent-activity.jsonl. Default 48h."
       }
     },
     "required": ["agents"]
