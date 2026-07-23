@@ -85,8 +85,8 @@ describe("buildInjectionForAgent", () => {
     expect(result).toContain("a1");
     expect(result).toContain("Amazon return email");
     expect(result).not.toContain("a2");
-    expect(result).toContain("--- AUTO-GENERATED CONTEXT (not part of user request) ---");
-    expect(result).toContain("--- END AUTO-GENERATED CONTEXT ---");
+    expect(result).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
+    expect(result).toContain("--- end intent-context plugin ---");
   });
 
   it("surfaces triggered intents matching actorFor", async () => {
@@ -101,8 +101,8 @@ describe("buildInjectionForAgent", () => {
     expect(result).toContain("ACTION NEEDED");
     expect(result).toContain("b1");
     expect(result).not.toContain("b2");
-    expect(result).toContain("--- AUTO-GENERATED CONTEXT (not part of user request) ---");
-    expect(result).toContain("--- END AUTO-GENERATED CONTEXT ---");
+    expect(result).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
+    expect(result).toContain("--- end intent-context plugin ---");
   });
 
   it("surfaces recent events within window matching eventDomains", async () => {
@@ -121,8 +121,8 @@ describe("buildInjectionForAgent", () => {
     expect(result).toContain("Carl");
     expect(result).not.toContain("stale");
     expect(result).not.toContain("finance");
-    expect(result).toContain("--- AUTO-GENERATED CONTEXT (not part of user request) ---");
-    expect(result).toContain("--- END AUTO-GENERATED CONTEXT ---");
+    expect(result).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
+    expect(result).toContain("--- end intent-context plugin ---");
   });
 
   it("surfaces ambient activity scoped to specific agents", async () => {
@@ -137,14 +137,14 @@ describe("buildInjectionForAgent", () => {
     const scoped = await buildInjectionForAgent({ ambientScope: ["pax"] }, paths, windows, now);
     expect(scoped).toContain("HA-F006");
     expect(scoped).not.toContain("Reviewed a transaction");
-    expect(scoped).toContain("--- AUTO-GENERATED CONTEXT (not part of user request) ---");
-    expect(scoped).toContain("--- END AUTO-GENERATED CONTEXT ---");
+    expect(scoped).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
+    expect(scoped).toContain("--- end intent-context plugin ---");
 
     const all = await buildInjectionForAgent({ ambientScope: "all" }, paths, windows, now);
     expect(all).toContain("HA-F006");
     expect(all).toContain("Reviewed a transaction");
-    expect(all).toContain("--- AUTO-GENERATED CONTEXT (not part of user request) ---");
-    expect(all).toContain("--- END AUTO-GENERATED CONTEXT ---");
+    expect(all).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
+    expect(all).toContain("--- end intent-context plugin ---");
   });
 });
 

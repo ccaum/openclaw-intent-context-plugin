@@ -209,9 +209,9 @@ export async function buildInjectionForAgent(
   if (sections.length === 0) return null;
   const body = sections.join("\n\n");
   return [
-    "--- AUTO-GENERATED CONTEXT (not part of user request) ---",
+    "--- intent-context plugin: auto-generated context (not part of user request) ---",
     body,
-    "--- END AUTO-GENERATED CONTEXT ---",
+    "--- end intent-context plugin ---",
   ].join("\n\n");
 }
 
