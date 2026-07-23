@@ -207,7 +207,12 @@ export async function buildInjectionForAgent(
   }
 
   if (sections.length === 0) return null;
-  return sections.join("\n\n");
+  const body = sections.join("\n\n");
+  return [
+    "--- AUTO-GENERATED CONTEXT (not part of user request) ---",
+    body,
+    "--- END AUTO-GENERATED CONTEXT ---",
+  ].join("\n\n");
 }
 
 function renderTemplate(template: string, data: Record<string, unknown>): string {
