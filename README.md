@@ -1,17 +1,10 @@
-# Intent Context
+# OpenClaw Intent Context Plugin
 
-OpenClaw plugin that gives agents passive awareness of each other and executes mechanical notify-type triggered intents. No active wake — everything surfaces on whatever turn happens next.
+The Intent Context plugin gives OpenClaw agents passive awareness of each other and mechanically executes notification-type triggered intents. It injects relevant pending intents and recent cross-agent activity into each agent's turn as it happens, so agents can act on what's going on across the system without being explicitly told. It also runs a background timer that delivers `notify`-type triggered intents via `openclaw message send`, so deterministic notifications fire without burning an LLM turn. No agent is ever actively woken — everything surfaces on whatever turn happens next.
 
-## What It Does
+Without this plugin, OpenClaw agents operate in isolation. They have no visibility into what other agents are doing, what intents are pending in the system, or what events have recently occurred outside their own session. Multi-agent coordination requires manual messaging or cron jobs. Notifications that should fire automatically when an intent is triggered either need a full LLM-backed agent turn every poll cycle (expensive and slow) or don't happen at all. External systems like home automation pipelines, transaction monitors, or email processors have no way to surface events to agents — they'd need to actively wake an agent or send a message, which is heavy, intrusive, and doesn't scale across multiple agents. Cross-agent awareness, automated notification delivery, and external event ingestion are all left unsolved.
 
-Two things:
-
-1. **Context injection** (`before_prompt_build` hook) — injects relevant pending intents and ambient cross-agent activity into each configured agent's turn:
-   - `WATCHING FOR` — pending intents matching the agent's watched trigger types
-   - `ACTION NEEDED` — triggered intents assigned to the agent
-   - `RECENT ACTIVITY` — recent `log_activity` entries from other agents
-
-2. **Notify executor** (`gateway_start` timer, default 60s) — mechanically executes `notify`-type triggered intents by rendering the message template and sending via `openclaw message send`. Also prunes the activity log to a configurable retention window.
+The plugin solves these problems through passive context injection and a mechanical notify executor. A `before_prompt_build` hook reads pending intents and recent activity from shared log files and injects them into whichever agent turn is already happening — so agents see what's pending, what's been triggered and assigned to them, and what other agents have been doing, all without any active wake. The `log_activity` tool lets any agent or external system append to the activity log via a simple HTTP call, so home automation pipelines, transaction monitors, and other services can surface events the same way agents do. A `gateway_start` timer mechanically executes `notify`-type triggered intents by rendering the message template and sending it via `openclaw message send` — no LLM turn needed, no agent judgment required, just deterministic delivery on a timer.
 
 ## The `log_activity` Tool
 
@@ -54,7 +47,7 @@ The entry is appended to `~/.openclaw/intents/recent-activity.jsonl` and surface
 
 If an agent has no entry in `config.agents`, the hook returns early and injects nothing.
 
-**Notify executor:** scans `pending.json` and `archive.json` for `status="triggered"` + `action.type="notify"`, renders `action.message_template` against `trigger_data` (`{{key}}` substitution, missing → `"N/A"`), shells out to `openclaw message send`, then sets `status="completed"` in place. `agent_task`-type intents are deliberately left alone — those need judgment and surface via injection instead.
+**Notify executor** (`gateway_start` timer, default 60s): scans `pending.json` and `archive.json` for `status="triggered"` + `action.type="notify"`, renders `action.message_template` against `trigger_data` (`{{key}}` substitution, missing → `"N/A"`), shells out to `openclaw message send`, then sets `status="completed"` in place. `agent_task`-type intents are deliberately left alone — those need judgment and surface via injection instead.
 
 Concurrency is guarded by a `mkdir`-based lock at `~/.openclaw/intents/.lock` with stale detection and automatic reclaim.
 
