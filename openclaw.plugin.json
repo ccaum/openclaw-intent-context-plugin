@@ -53,7 +53,7 @@
       },
       "logRetentionMs": {
         "type": "number",
-        "description": "Retention window for pruning recent-events.jsonl and recent-activity.jsonl. Default 48h."
+        "description": "Retention window for pruning recent-activity.jsonl. Default 48h."
       }
     },
     "required": ["agents"]

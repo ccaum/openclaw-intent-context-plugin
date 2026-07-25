@@ -45,7 +45,7 @@ export const ConfigSchema = Type.Object(
     recentActivityWindowMs: Type.Optional(Type.Number({ description: "How far back to surface ambient-activity entries. Default 6h." })),
     openclawBin: Type.Optional(Type.String({ description: "Path to the openclaw CLI binary. Default /opt/homebrew/bin/openclaw." })),
     fallbackNotifyChannel: Type.Optional(Type.String({ description: "Channel used when an intent's action.channel is unset. Default bluebubbles." })),
-    logRetentionMs: Type.Optional(Type.Number({ description: "Retention window for pruning recent-events.jsonl and recent-activity.jsonl. Default 48h." })),
+    logRetentionMs: Type.Optional(Type.Number({ description: "Retention window for pruning recent-activity.jsonl. Default 48h." })),
   },
   { additionalProperties: false },
 );
