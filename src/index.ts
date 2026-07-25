@@ -13,7 +13,6 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
 const DEFAULT_NOTIFY_INTERVAL_MS = 60_000;
-const DEFAULT_EVENTS_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_LOG_RETENTION_MS = 48 * 60 * 60 * 1000;
 const DEFAULT_FALLBACK_NOTIFY_CHANNEL = "bluebubbles";
@@ -31,7 +30,6 @@ const AgentAwarenessConfigSchema = Type.Object(
   {
     watchedTriggerTypes: Type.Optional(Type.Array(Type.String())),
     actorFor: Type.Optional(Type.Array(Type.String())),
-    eventDomains: Type.Optional(Type.Array(Type.String())),
     ambientScope: Type.Optional(Type.Union([Type.Literal("all"), Type.Array(Type.String())])),
   },
   { additionalProperties: false },
@@ -44,7 +42,6 @@ export const ConfigSchema = Type.Object(
       description: "Per-agent awareness config, keyed by agentId.",
     }),
     notifyExecutorIntervalMs: Type.Optional(Type.Number({ description: "Poll interval for the mechanical notify executor. Default 60000." })),
-    recentEventsWindowMs: Type.Optional(Type.Number({ description: "How far back to surface recent-events entries. Default 24h." })),
     recentActivityWindowMs: Type.Optional(Type.Number({ description: "How far back to surface ambient-activity entries. Default 6h." })),
     openclawBin: Type.Optional(Type.String({ description: "Path to the openclaw CLI binary. Default /opt/homebrew/bin/openclaw." })),
     fallbackNotifyChannel: Type.Optional(Type.String({ description: "Channel used when an intent's action.channel is unset. Default bluebubbles." })),
@@ -59,7 +56,6 @@ export interface IntentPaths {
   intentsDir: string;
   pendingPath: string;
   archivePath: string;
-  eventsLogPath: string;
   activityLogPath: string;
   lockDir: string;
 }
@@ -70,7 +66,6 @@ export function resolvePaths(config: Pick<PluginConfig, "intentsDir">): IntentPa
     intentsDir,
     pendingPath: path.join(intentsDir, "pending.json"),
     archivePath: path.join(intentsDir, "archive.json"),
-    eventsLogPath: path.join(intentsDir, "recent-events.jsonl"),
     activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
     lockDir: path.join(intentsDir, ".lock"),
   };
@@ -106,21 +101,6 @@ async function readJsonLines(filePath: string): Promise<Record<string, any>[]> {
   }
 }
 
-// Lightweight NATS-style subject matching: "*" matches exactly one token,
-// ">" matches the rest of the subject (must be the final token).
-export function subjectMatchesDomain(subject: string, domainPattern: string): boolean {
-  const domainTokens = domainPattern.split(".");
-  const subjectTokens = subject.split(".");
-  for (let i = 0; i < domainTokens.length; i += 1) {
-    const token = domainTokens[i];
-    if (token === ">") return true;
-    if (i >= subjectTokens.length) return false;
-    if (token === "*") continue;
-    if (token !== subjectTokens[i]) return false;
-  }
-  return domainTokens.length === subjectTokens.length;
-}
-
 function withinWindow(timestamp: unknown, windowMs: number, now: number): boolean {
   if (typeof timestamp !== "string") return false;
   const ts = Date.parse(timestamp);
@@ -131,7 +111,7 @@ function withinWindow(timestamp: unknown, windowMs: number, now: number): boolea
 export async function buildInjectionForAgent(
   agentConfig: AgentAwarenessConfig,
   paths: IntentPaths,
-  windows: { recentEventsWindowMs: number; recentActivityWindowMs: number },
+  windows: { recentActivityWindowMs: number },
   now: number = Date.now(),
 ): Promise<string | null> {
   const sections: string[] = [];
@@ -166,24 +146,6 @@ export async function buildInjectionForAgent(
             (item) =>
               `- [${item.id}] ${item.description} — action: ${JSON.stringify(item.action ?? {})} — data: ${JSON.stringify(item.trigger_data ?? {})}`,
           ),
-        ].join("\n"),
-      );
-    }
-  }
-
-  if (agentConfig.eventDomains && agentConfig.eventDomains.length > 0) {
-    const events = await readJsonLines(paths.eventsLogPath);
-    const recent = events.filter(
-      (event) =>
-        withinWindow(event.timestamp, windows.recentEventsWindowMs, now) &&
-        typeof event.subject === "string" &&
-        agentConfig.eventDomains!.some((domain) => subjectMatchesDomain(event.subject, domain)),
-    );
-    if (recent.length > 0) {
-      sections.push(
-        [
-          "RECENT EVENTS in your domain:",
-          ...recent.map((event) => `- [${event.timestamp}] ${event.subject}: ${JSON.stringify(event.payload ?? {})}`),
         ].join("\n"),
       );
     }
@@ -392,7 +354,6 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
     const config = api.pluginConfig as PluginConfig;
     const paths = resolvePaths(config);
     const windows = {
-      recentEventsWindowMs: config.recentEventsWindowMs ?? DEFAULT_EVENTS_WINDOW_MS,
       recentActivityWindowMs: config.recentActivityWindowMs ?? DEFAULT_ACTIVITY_WINDOW_MS,
     };
 
@@ -419,7 +380,6 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
         runNotifyExecutor(paths, executorOpts).catch((error) => {
           console.error("[intent-context] notify executor error", error);
         });
-        pruneLogFile(paths.eventsLogPath, logRetentionMs).catch(() => {});
         pruneLogFile(paths.activityLogPath, logRetentionMs).catch(() => {});
       }, intervalMs);
     });
@@ -438,11 +398,14 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
             minLength: 1,
             description: "Short description of what happened, e.g. \"Picked up ticket HA-F006: Intelligent clip content selection.\"",
           }),
+          agent: Type.Optional(Type.String({
+            description: "Agent or system identifier. Defaults to the calling session's agentId. External systems calling via /tools/invoke should set this to identify themselves (e.g. \"marlin\").",
+          })),
         }),
-        execute: async (_toolCallId: string, params: { text: string }) => {
+        execute: async (_toolCallId: string, params: { text: string; agent?: string }) => {
           await fs.mkdir(paths.intentsDir, { recursive: true });
           const entry = {
-            agent: toolCtx.agentId ?? "unknown",
+            agent: params.agent ?? toolCtx.agentId ?? "unknown",
             text: params.text,
             timestamp: new Date().toISOString(),
           };

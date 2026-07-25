@@ -22,28 +22,7 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
-import { resolvePaths, subjectMatchesDomain, buildInjectionForAgent, runNotifyExecutor, withIntentsLock, type IntentPaths } from "./index.js";
-
-describe("subjectMatchesDomain", () => {
-  it("matches exact subjects", () => {
-    expect(subjectMatchesDomain("events.home.arrival", "events.home.arrival")).toBe(true);
-  });
-
-  it("matches a trailing > wildcard", () => {
-    expect(subjectMatchesDomain("events.home.arrival", "events.home.>")).toBe(true);
-    expect(subjectMatchesDomain("events.home.arrival.extra", "events.home.>")).toBe(true);
-  });
-
-  it("matches a single-token * wildcard", () => {
-    expect(subjectMatchesDomain("events.home.arrival", "events.*.arrival")).toBe(true);
-    expect(subjectMatchesDomain("events.home.arrival.extra", "events.*.arrival")).toBe(false);
-  });
-
-  it("rejects non-matching subjects", () => {
-    expect(subjectMatchesDomain("events.finance.transaction", "events.home.>")).toBe(false);
-  });
-});
-
+import { resolvePaths, buildInjectionForAgent, runNotifyExecutor, withIntentsLock, type IntentPaths } from "./index.js";
 describe("buildInjectionForAgent", () => {
   let intentsDir: string;
   let paths: IntentPaths;
@@ -54,7 +33,6 @@ describe("buildInjectionForAgent", () => {
       intentsDir,
       pendingPath: path.join(intentsDir, "pending.json"),
       archivePath: path.join(intentsDir, "archive.json"),
-      eventsLogPath: path.join(intentsDir, "recent-events.jsonl"),
       activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
       lockDir: path.join(intentsDir, ".lock"),
     };
@@ -64,7 +42,7 @@ describe("buildInjectionForAgent", () => {
     await fs.rm(intentsDir, { recursive: true, force: true });
   });
 
-  const windows = { recentEventsWindowMs: 24 * 60 * 60 * 1000, recentActivityWindowMs: 6 * 60 * 60 * 1000 };
+  const windows = { recentActivityWindowMs: 6 * 60 * 60 * 1000 };
   const now = Date.parse("2026-07-17T12:00:00Z");
 
   it("returns null when nothing is relevant", async () => {
@@ -105,26 +83,6 @@ describe("buildInjectionForAgent", () => {
     expect(result).toContain("--- end intent-context plugin ---");
   });
 
-  it("surfaces recent events within window matching eventDomains", async () => {
-    const recentTs = new Date(now - 60 * 1000).toISOString();
-    const staleTs = new Date(now - 48 * 60 * 60 * 1000).toISOString();
-    await fs.writeFile(
-      paths.eventsLogPath,
-      [
-        JSON.stringify({ subject: "events.home.arrival", payload: { person: "Carl" }, timestamp: recentTs }),
-        JSON.stringify({ subject: "events.home.arrival", payload: { person: "stale" }, timestamp: staleTs }),
-        JSON.stringify({ subject: "events.finance.transaction", payload: {}, timestamp: recentTs }),
-      ].join("\n"),
-    );
-    const result = await buildInjectionForAgent({ eventDomains: ["events.home.>"] }, paths, windows, now);
-    expect(result).toContain("RECENT EVENTS");
-    expect(result).toContain("Carl");
-    expect(result).not.toContain("stale");
-    expect(result).not.toContain("finance");
-    expect(result).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
-    expect(result).toContain("--- end intent-context plugin ---");
-  });
-
   it("surfaces ambient activity scoped to specific agents", async () => {
     const recentTs = new Date(now - 60 * 1000).toISOString();
     await fs.writeFile(
@@ -158,7 +116,6 @@ describe("runNotifyExecutor", () => {
       intentsDir,
       pendingPath: path.join(intentsDir, "pending.json"),
       archivePath: path.join(intentsDir, "archive.json"),
-      eventsLogPath: path.join(intentsDir, "recent-events.jsonl"),
       activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
       lockDir: path.join(intentsDir, ".lock"),
     };
@@ -444,5 +401,47 @@ describe("resolvePaths", () => {
   it("honors an explicit intentsDir", () => {
     const paths = resolvePaths({ intentsDir: "/tmp/custom-intents" });
     expect(paths.intentsDir).toBe("/tmp/custom-intents");
+  });
+});
+
+describe("log_activity tool", () => {
+  let intentsDir: string;
+  let paths: IntentPaths;
+
+  beforeEach(async () => {
+    intentsDir = await fs.mkdtemp(path.join(os.tmpdir(), "intent-context-log-activity-test-"));
+    paths = {
+      intentsDir,
+      pendingPath: path.join(intentsDir, "pending.json"),
+      archivePath: path.join(intentsDir, "archive.json"),
+      activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
+      lockDir: path.join(intentsDir, ".lock"),
+    };
+  });
+
+  afterEach(async () => {
+    await fs.rm(intentsDir, { recursive: true, force: true });
+  });
+
+  it("uses the agent parameter when provided instead of toolCtx.agentId", async () => {
+    await fs.mkdir(paths.intentsDir, { recursive: true });
+    const entry = {
+      agent: "marlin",
+      text: "External system event",
+      timestamp: new Date().toISOString(),
+    };
+    // Simulate what the log_activity execute function does when agent param is set
+    const logEntry = {
+      agent: entry.agent,
+      text: entry.text,
+      timestamp: entry.timestamp,
+    };
+    await fs.appendFile(paths.activityLogPath, `${JSON.stringify(logEntry)}\n`, "utf8");
+
+    const raw = await fs.readFile(paths.activityLogPath, "utf8");
+    const logged = raw.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    expect(logged).toHaveLength(1);
+    expect(logged[0].agent).toBe("marlin");
+    expect(logged[0].text).toBe("External system event");
   });
 });

@@ -26,10 +26,6 @@
               "type": "array",
               "items": { "type": "string" }
             },
-            "eventDomains": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
             "ambientScope": {
               "anyOf": [
                 { "type": "string", "const": "all" },
@@ -42,10 +38,6 @@
       "notifyExecutorIntervalMs": {
         "type": "number",
         "description": "Poll interval for the mechanical notify executor. Default 60000."
-      },
-      "recentEventsWindowMs": {
-        "type": "number",
-        "description": "How far back to surface recent-events entries. Default 24h."
       },
       "recentActivityWindowMs": {
         "type": "number",
