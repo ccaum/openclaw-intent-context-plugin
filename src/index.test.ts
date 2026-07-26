@@ -4,10 +4,6 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
 
-vi.mock("node:child_process", () => ({
-  execSync: vi.fn(() => ""),
-}));
-
 import { resolvePaths, buildInjectionForAgent, pruneExpiredIntents, type IntentPaths } from "./index.js";
 
 describe("buildInjectionForAgent", () => {
