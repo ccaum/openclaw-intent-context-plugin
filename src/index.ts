@@ -338,7 +338,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
                 let woke = false;
                 // Preferred: in-process Gateway request (no shell-out overhead).
                 if (gatewayRuntime && await gatewayRuntime.isAvailable()) {
-                  await gatewayRuntime.request("system.event", {
+                  await gatewayRuntime.request("wake", {
                     text: wakeMessage,
                     sessionKey,
                     mode: "now",
