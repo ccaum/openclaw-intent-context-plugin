@@ -227,7 +227,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
     api.on("before_prompt_build", async (_event, ctx) => {
       const agentId = ctx.agentId;
       if (!agentId) return;
-      const agentConfig = config.agents?.[agentId];
+      const agentConfig = config.agents?.[agentId] ?? config.agents?.[agentId.toLowerCase()];
       if (!agentConfig) return;
       const injection = await buildInjectionForAgent(agentConfig, paths, windows, Date.now(), config.triggerTypes || {});
       if (!injection) return;

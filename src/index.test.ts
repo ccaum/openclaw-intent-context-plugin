@@ -124,6 +124,34 @@ describe("buildInjectionForAgent", () => {
     expect(all).toContain("--- intent-context plugin: auto-generated context (not part of user request) ---");
     expect(all).toContain("--- end intent-context plugin ---");
   });
+
+  it("case-insensitive agent config lookup: capitalized agentId matches lowercase config key", async () => {
+    // Simulates the before_prompt_build handler's lookup logic:
+    //   config.agents?.[agentId] ?? config.agents?.[agentId.toLowerCase()]
+    // Here the config is keyed by "postman" (lowercase) but the agent id is "Postman" (capitalized).
+    const config = {
+      agents: {
+        postman: { watchedTriggerTypes: ["email"] },
+      } as Record<string, any>,
+    };
+    const agentId = "Postman";
+
+    // This is the exact lookup from before_prompt_build after the fix:
+    const agentConfig = config.agents?.[agentId] ?? config.agents?.[agentId.toLowerCase()];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.watchedTriggerTypes).toEqual(["email"]);
+
+    // Now verify buildInjectionForAgent works with that config and finds matching intents
+    await fs.writeFile(
+      paths.pendingPath,
+      JSON.stringify([
+        { id: "c1", status: "pending", description: "Package delivery", trigger: { type: "email", conditions: {} } },
+      ]),
+    );
+    const result = await buildInjectionForAgent(agentConfig, paths, windows, now);
+    expect(result).toContain("WATCHING FOR");
+    expect(result).toContain("c1");
+  });
 });
 
 describe("resolvePaths", () => {
