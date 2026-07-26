@@ -82,44 +82,44 @@ Agents may see these blocks at the top of their turn. They are background contex
 
 ### Development Orchestration
 
-A product manager agent (Pax) coordinates a team of development agents: a coder, a QA tester (Probe), and an operations agent. The coder is building a feature, Probe needs to test it when it's ready, and Pax needs to know when it ships.
+An orchestrator agent coordinates a team of development agents: a coder, a tester, and a deployer. The coder is building a feature, the tester needs to test it when it's ready, and the orchestrator needs to know when it ships.
 
-1. Pax creates an intent: watch for `build_complete` events, notify Pax. The coder has `watchedTriggerTypes: ["build_complete"]` in its config.
+1. The orchestrator creates an intent: watch for `build_complete` events, notify the orchestrator. The coder has `watchedTriggerTypes: ["build_complete"]` in its config.
 2. The coder finishes the build and calls `log_activity("Feature X build complete, commit abc123, all tests pass")`.
-3. Pax sees this in RECENT ACTIVITY on his next turn — no message needed, the coder didn't have to know Pax cares about this.
+3. The orchestrator sees this in RECENT ACTIVITY on its next turn — no message needed, the coder didn't have to know the orchestrator cares about this.
 4. The coder also sees the WATCHING FOR intent in its context (it was there the whole time), recognizes the build is complete, and calls `intent_update(id, "triggered", message="Build abc123 passed all 48 tests, ready for QA")`.
-5. The plugin wakes Pax with a system event. Pax sees ACTION NEEDED on his next turn with the coder's message.
-6. Pax dispatches Probe to test the build, and when Probe reports back, Pax marks the intent complete with `intent_update(id, "completed")`.
+5. The plugin wakes the orchestrator with a system event. The orchestrator sees ACTION NEEDED on its next turn with the coder's message.
+6. The orchestrator dispatches the tester to verify the build, and when the tester reports back, the orchestrator marks the intent complete with `intent_update(id, "completed")`.
 
-Throughout this flow, no agent actively messaged another. The coder logged activity passively. Pax saw it without being told. The intent handoff went through the plugin, not through direct messaging.
+Throughout this flow, no agent actively messaged another. The coder logged activity passively. The orchestrator saw it without being told. The intent handoff went through the plugin, not through direct messaging.
 
 ### Watching for a Transaction
 
-A user tells their assistant agent (Silas): "Let me know when the refund from Acme hits my account." A transaction monitoring agent (Roger) processes bank transactions as part of his normal routine.
+A user tells their assistant agent: "Let me know when the refund from Acme hits my account." A separate transaction monitoring agent processes bank transactions as part of its normal routine.
 
-1. Silas creates an intent: watch for a transaction matching "refund from Acme", notify Silas. Roger has `watchedTriggerTypes: ["transaction"]` in his config.
-2. Roger is processing the day's transactions as part of his normal work. He sees WATCHING FOR in his context: "refund from Acme over $200".
-3. Roger notices a $500 refund from Acme in the transaction feed. He calls `intent_update(id, "triggered", message="Refund of $500 from Acme posted today", trigger_data={"amount": 500, "merchant": "Acme", "date": "2026-07-25"})`.
-4. The plugin wakes Silas with a system event. Silas sees ACTION NEEDED on his next turn: "From Roger: Refund of $500 from Acme posted. Data: {amount: 500, merchant: Acme, date: 2026-07-25}."
-5. Silas notifies the user via iMessage and calls `intent_update(id, "completed")`.
+1. The assistant creates an intent: watch for a transaction matching "refund from Acme", notify the assistant. The monitoring agent has `watchedTriggerTypes: ["transaction"]` in its config.
+2. The monitoring agent is processing the day's transactions as part of its normal work. It sees WATCHING FOR in its context: "refund from Acme over $200".
+3. The monitoring agent notices a $500 refund from Acme in the transaction feed. It calls `intent_update(id, "triggered", message="Refund of $500 from Acme posted today", trigger_data={"amount": 500, "merchant": "Acme", "date": "2026-07-25"})`.
+4. The plugin wakes the assistant with a system event. The assistant sees ACTION NEEDED on its next turn: "From monitoring: Refund of $500 from Acme posted. Data: {amount: 500, merchant: Acme, date: 2026-07-25}."
+5. The assistant notifies the user and calls `intent_update(id, "completed")`.
 
-Roger didn't need to know how to reach Silas. Silas didn't need to be running when the refund posted. The intent carried the context — what to watch for, who to notify — through the full chain.
+The monitoring agent didn't need to know how to reach the assistant. The assistant didn't need to be running when the refund posted. The intent carried the context — what to watch for, who to notify — through the full chain.
 
 ### External System Integration
 
-A home automation pipeline (marlin) detects someone arriving home. It doesn't run as an OpenClaw agent, but it can still surface events to agents that do.
+A home automation pipeline detects someone arriving home. It doesn't run as an OpenClaw agent, but it can still surface events to agents that do.
 
 1. The pipeline detects a vehicle in the driveway and calls `/tools/invoke` on the gateway:
    ```bash
    curl -sS http://127.0.0.1:18789/tools/invoke \
      -H "Authorization: Bearer $GATEWAY_TOKEN" \
      -H "Content-Type: application/json" \
-     -d '{"tool":"log_activity","args":{"text":"Driveway: vehicle arrived, Carl home","agent":"marlin"}}'
+     -d '{"tool":"log_activity","args":{"text":"Driveway: vehicle arrived, someone home","agent":"motion-pipeline"}}'
    ```
-2. A home awareness agent (Scout) sees this in RECENT ACTIVITY on its next turn. Scout didn't need to be running when the event happened — it sees it whenever its next turn occurs.
-3. Scout can then take action: log the arrival, check if any home automation intents match, or notify the user if configured to do so.
+2. A home awareness agent sees this in RECENT ACTIVITY on its next turn. It didn't need to be running when the event happened — it sees it whenever its next turn occurs.
+3. The home awareness agent can then take action: log the arrival, check if any home automation intents match, or notify the user if configured to do so.
 
-The pipeline doesn't need to know which agent cares about driveway events. It just logs activity. Any agent with `ambientScope` including `"marlin"` sees it.
+The pipeline doesn't need to know which agent cares about driveway events. It just logs activity. Any agent with `ambientScope` including `"motion-pipeline"` sees it.
 
 ## Architecture
 
