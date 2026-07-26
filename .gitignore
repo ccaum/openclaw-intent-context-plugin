@@ -1,4 +1,6 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.DS_StoreINDEX.md
+.DS_Store
+INDEX.md
+TASK-*.md
