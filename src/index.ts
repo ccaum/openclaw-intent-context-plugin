@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync } from "node:child_process";
+import * as crypto from "node:crypto";
 
 // Default values — all overridable via configSchema.
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
@@ -30,6 +31,11 @@ const AgentAwarenessConfigSchema = Type.Object(
 export const ConfigSchema = Type.Object(
   {
     intentsDir: Type.Optional(Type.String({ description: "Path to the shared intents store. Defaults to ~/.openclaw/intents." })),
+    triggerTypes: Type.Optional(Type.Record(Type.String(), Type.String({
+      description: "Description of when to use this trigger type.",
+    }), {
+      description: "Registry of valid trigger types. Keys are type strings, values are human-readable descriptions. Agents can only watch for registered types and create intents with registered types.",
+    })),
     agents: Type.Record(Type.String(), AgentAwarenessConfigSchema, {
       description: "Per-agent awareness config, keyed by agentId.",
     }),
@@ -100,8 +106,18 @@ export async function buildInjectionForAgent(
   paths: IntentPaths,
   windows: { recentActivityWindowMs: number },
   now: number = Date.now(),
+  triggerTypes: Record<string, string> = {},
 ): Promise<string | null> {
   const sections: string[] = [];
+
+  // Validate watchedTriggerTypes against registry
+  if (agentConfig.watchedTriggerTypes && triggerTypes && Object.keys(triggerTypes).length > 0) {
+    for (const t of agentConfig.watchedTriggerTypes) {
+      if (!(t in triggerTypes)) {
+        console.error(`[intent-context] Agent config has watchedTriggerType "${t}" but it is not in the triggerTypes registry. Valid types: ${Object.keys(triggerTypes).join(", ")}`);
+      }
+    }
+  }
 
   if (agentConfig.watchedTriggerTypes && agentConfig.watchedTriggerTypes.length > 0) {
     const pending = await readJsonArray(paths.pendingPath);
@@ -199,7 +215,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
       if (!agentId) return;
       const agentConfig = config.agents?.[agentId];
       if (!agentConfig) return;
-      const injection = await buildInjectionForAgent(agentConfig, paths, windows);
+      const injection = await buildInjectionForAgent(agentConfig, paths, windows, Date.now(), config.triggerTypes || {});
       if (!injection) return;
       return { prependContext: injection };
     });
@@ -311,6 +327,104 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
         },
       }),
       { name: "intent_update" },
+    );
+
+    api.registerTool(
+      (_toolCtx) => ({
+        name: "list_trigger_types",
+        label: "List Trigger Types",
+        description: "List the valid trigger types that can be used when creating intents or configuring watchedTriggerTypes. Returns each type with its description.",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const types = config.triggerTypes || {};
+          return jsonResult({ triggerTypes: types });
+        },
+      }),
+      { name: "list_trigger_types" },
+    );
+
+    api.registerTool(
+      (toolCtx) => ({
+        name: "intent_create",
+        label: "Create Intent",
+        description: "Create a new pending intent for the system to watch for. The trigger type must be a registered type (use list_trigger_types to see valid types). The notify_agent is the agent that should be woken when the condition is met.",
+        parameters: Type.Object({
+          trigger_type: Type.String({
+            minLength: 1,
+            description: "The trigger type for this intent. Must be a registered type (see list_trigger_types).",
+          }),
+          trigger_data: Type.Optional(Type.Record(Type.String(), Type.Any(), {
+            description: "Optional structured data describing what to watch for (e.g. {\"merchant\": \"Acme\", \"min_amount\": 200}).",
+          })),
+          description: Type.String({
+            minLength: 1,
+            description: "Human-readable description of what condition to watch for.",
+          }),
+          notify_agent: Type.String({
+            minLength: 1,
+            description: "The agent id that should be notified when this intent is triggered.",
+          }),
+          action_type: Type.Optional(Type.Union([
+            Type.Literal("notify"),
+            Type.Literal("agent_task"),
+          ], {
+            description: "What to do when triggered. 'notify' (default) just wakes the target agent. 'agent_task' surfaces it for the agent to decide.",
+          })),
+          action_message_template: Type.Optional(Type.String({
+            description: "Optional message template for the notification. Use {{key}} placeholders that get filled from trigger_data when the intent is triggered.",
+          })),
+        }),
+        execute: async (_toolCallId: string, params: {
+          trigger_type: string;
+          trigger_data?: Record<string, any>;
+          description: string;
+          notify_agent: string;
+          action_type?: "notify" | "agent_task";
+          action_message_template?: string;
+        }) => {
+          // Validate trigger_type against registry
+          const validTypes = config.triggerTypes || {};
+          if (!(params.trigger_type in validTypes)) {
+            const validList = Object.entries(validTypes)
+              .map(([k, v]) => `  ${k}: ${v}`)
+              .join("\n");
+            return jsonResult({
+              ok: false,
+              error: `Invalid trigger type: "${params.trigger_type}". Valid types are:\n${validList}`,
+            });
+          }
+
+          // Read pending.json
+          const pending = await readJsonArray(paths.pendingPath);
+
+          // Create new intent
+          const intent = {
+            id: crypto.randomUUID(),
+            status: "pending",
+            trigger: {
+              type: params.trigger_type,
+              data: params.trigger_data || {},
+            },
+            description: params.description,
+            notify_agent: params.notify_agent,
+            action: {
+              type: params.action_type || "notify",
+              message_template: params.action_message_template || params.description,
+            },
+            created_at: new Date().toISOString(),
+            created_by: toolCtx.agentId,
+          };
+
+          pending.push(intent);
+          await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2));
+
+          return jsonResult({
+            ok: true,
+            intent: { id: intent.id, status: "pending" },
+          });
+        },
+      }),
+      { name: "intent_create" },
     );
   },
 });

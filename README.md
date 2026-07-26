@@ -37,11 +37,38 @@ intent_update(id: string, status: "triggered" | "completed", message?: string, t
 ```
 
 - `id` — the intent ID to update
-- `status` — `"triggered"` (condition met, wake target agent) or `"completed"` (action taken, close out)
+- `status` — `"triggered" (condition met, wake target agent) or `"completed"` (action taken, close out)
 - `message` — what you saw and why it matched (required when triggering)
 - `trigger_data` — optional structured data for the target agent
 
 When status is `"triggered"`, the plugin stores the message and data on the intent and wakes the target agent via `openclaw system event`. The target agent sees the trigger in its ACTION NEEDED block on its next turn.
+
+### list_trigger_types
+
+List the valid trigger types that can be used when creating intents or configuring watchedTriggerTypes. Returns each type with its description.
+
+```
+list_trigger_types()
+```
+
+Returns an object with `triggerTypes` — a map of type strings to human-readable descriptions.
+
+### intent_create
+
+Create a new pending intent for the system to watch for. The trigger type must be a registered type (use `list_trigger_types` to see valid types). The `notify_agent` is the agent that should be woken when the condition is met.
+
+```
+intent_create(trigger_type: string, description: string, notify_agent: string, trigger_data?: object, action_type?: "notify" | "agent_task", action_message_template?: string)
+```
+
+- `trigger_type` — must be a registered type (see `list_trigger_types`)
+- `description` — human-readable description of what condition to watch for
+- `notify_agent` — the agent id that should be notified when triggered
+- `trigger_data` — optional structured data describing what to watch for
+- `action_type` — `"notify"` (default) just wakes the target agent. `"agent_task"` surfaces it for the agent to decide
+- `action_message_template` — optional message template with `{{key}}` placeholders filled from `trigger_data`
+
+If the trigger type is not in the registry, the tool returns an error listing all valid types.
 
 ## Context Injection Blocks
 
@@ -138,13 +165,21 @@ Add to `~/.openclaw/openclaw.json` under `plugins.entries.intent-context`:
 {
   "config": {
     "intentsDir": "~/.openclaw/intents",
+    "triggerTypes": {
+      "transaction": "Bank or payment transactions — deposits, refunds, charges",
+      "home_event": "Home automation events — arrivals, departures, device state changes",
+      "email": "Inbound email matching specific criteria"
+    },
     "agents": {
-      "pax": {
-        "actorFor": ["pax"],
-        "ambientScope": ["scout", "roger", "pax"]
+      "assistant": {
+        "actorFor": ["assistant"],
+        "ambientScope": ["monitor", "assistant"]
       },
-      "scout": {
-        "watchedTriggerTypes": ["home_event", "device_presence"]
+      "monitor": {
+        "watchedTriggerTypes": ["transaction"]
+      },
+      "home": {
+        "watchedTriggerTypes": ["home_event"]
       }
     },
     "recentActivityWindowMs": 86400000,
@@ -158,12 +193,17 @@ Add to `~/.openclaw/openclaw.json` under `plugins.entries.intent-context`:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `intentsDir` | `~/.openclaw/intents` | Path to the shared intents store |
+| `triggerTypes` | — | Registry of valid trigger types. Keys are type strings, values are descriptions of when to use them. Required for intent creation and watchedTriggerTypes validation. |
 | `agents` | (required) | Per-agent awareness config, keyed by agentId |
-| `agents.<id>.watchedTriggerTypes` | — | Trigger types to watch for in pending intents |
+| `agents.<id>.watchedTriggerTypes` | — | Trigger types to watch for. Must be registered in triggerTypes. |
 | `agents.<id>.actorFor` | — | `notify_agent` values this agent acts on |
 | `agents.<id>.ambientScope` | — | `"all"` or array of agent ids to see activity from |
 | `recentActivityWindowMs` | `21600000` (6h) | How far back to surface activity entries |
 | `logRetentionMs` | `172800000` (48h) | Retention for pruning the activity log |
+
+### How actorFor works
+
+When an intent is triggered, it has a `notify_agent` field — the agent that should act on it. `actorFor` in an agent's config says "I handle triggered intents where `notify_agent` matches these values." If an agent has `actorFor: ["assistant"]`, any triggered intent with `notify_agent: "assistant"` shows up in that agent's ACTION NEEDED block. It's the routing for triggered intents — `watchedTriggerTypes` routes pending intents to watchers, `actorFor` routes triggered intents to actors.
 
 ## Installation
 

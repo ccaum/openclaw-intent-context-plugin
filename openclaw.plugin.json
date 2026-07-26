@@ -11,6 +11,14 @@
         "type": "string",
         "description": "Path to the shared intents store. Defaults to ~/.openclaw/intents."
       },
+      "triggerTypes": {
+        "type": "object",
+        "description": "Registry of valid trigger types. Keys are type strings, values are human-readable descriptions of when to use that type.",
+        "additionalProperties": {
+          "type": "string",
+          "description": "Description of when to use this trigger type."
+        }
+      },
       "agents": {
         "type": "object",
         "description": "Per-agent awareness config, keyed by agentId.",
@@ -52,7 +60,9 @@
   "contracts": {
     "tools": [
       "log_activity",
-      "intent_update"
+      "intent_update",
+      "list_trigger_types",
+      "intent_create"
     ]
   }
 }

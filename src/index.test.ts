@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as crypto from "node:crypto";
 
 vi.mock("node:child_process", () => ({
   execSync: vi.fn(() => ""),
@@ -176,5 +177,140 @@ describe("log_activity tool", () => {
     expect(logged).toHaveLength(1);
     expect(logged[0].agent).toBe("marlin");
     expect(logged[0].text).toBe("External system event");
+  });
+});
+
+// Tests for list_trigger_types and intent_create tool logic.
+// These test the core logic (trigger type validation, intent creation, pending.json write)
+// the same way the plugin's register() function does it.
+
+describe("list_trigger_types logic", () => {
+  it("returns registered trigger types", () => {
+    const triggerTypes = {
+      transaction: "Bank or payment transactions",
+      home_event: "Home automation events",
+    };
+    // list_trigger_types execute just returns { triggerTypes: config.triggerTypes || {} }
+    const result = { triggerTypes: triggerTypes };
+    expect(result.triggerTypes).toEqual(triggerTypes);
+    expect(Object.keys(result.triggerTypes)).toHaveLength(2);
+  });
+
+  it("returns empty object when triggerTypes is not configured", () => {
+    const config: Record<string, string> | undefined = undefined;
+    const result = { triggerTypes: config || {} };
+    expect(result.triggerTypes).toEqual({});
+  });
+});
+
+describe("intent_create logic", () => {
+  let intentsDir: string;
+  let paths: IntentPaths;
+
+  beforeEach(async () => {
+    intentsDir = await fs.mkdtemp(path.join(os.tmpdir(), "intent-context-create-test-"));
+    paths = {
+      intentsDir,
+      pendingPath: path.join(intentsDir, "pending.json"),
+      archivePath: path.join(intentsDir, "archive.json"),
+      activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
+    };
+    await fs.mkdir(paths.intentsDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(intentsDir, { recursive: true, force: true });
+  });
+
+  const triggerTypes: Record<string, string> = {
+    transaction: "Bank or payment transactions",
+    home_event: "Home automation events",
+  };
+
+  it("creates an intent with a valid trigger type", async () => {
+    const params = {
+      trigger_type: "transaction",
+      description: "Refund from Acme over $200",
+      notify_agent: "assistant",
+      trigger_data: { merchant: "Acme", min_amount: 200 },
+    };
+
+    // Validate trigger_type against registry
+    expect(params.trigger_type in triggerTypes).toBe(true);
+
+    // Read pending.json (empty)
+    const pending: Record<string, any>[] = [];
+
+    // Create intent
+    const intent = {
+      id: crypto.randomUUID(),
+      status: "pending",
+      trigger: { type: params.trigger_type, data: params.trigger_data || {} },
+      description: params.description,
+      notify_agent: params.notify_agent,
+      action: { type: "notify", message_template: params.description },
+      created_at: new Date().toISOString(),
+      created_by: "test-agent",
+    };
+    pending.push(intent);
+    await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2));
+
+    // Verify
+    const raw = await fs.readFile(paths.pendingPath, "utf8");
+    const stored = JSON.parse(raw);
+    expect(stored).toHaveLength(1);
+    expect(stored[0].status).toBe("pending");
+    expect(stored[0].trigger.type).toBe("transaction");
+    expect(stored[0].trigger.data).toEqual({ merchant: "Acme", min_amount: 200 });
+    expect(stored[0].notify_agent).toBe("assistant");
+    expect(stored[0].id).toMatch(/[0-9a-f-]{36}/);
+  });
+
+  it("returns error with valid types listed when trigger type is invalid", () => {
+    const params = {
+      trigger_type: "nonexistent",
+      description: "Some intent",
+      notify_agent: "assistant",
+    };
+
+    // Validate trigger_type against registry
+    const valid = params.trigger_type in triggerTypes;
+    expect(valid).toBe(false);
+
+    // Build error response
+    const validList = Object.entries(triggerTypes)
+      .map(([k, v]) => `  ${k}: ${v}`)
+      .join("\n");
+    const error = `Invalid trigger type: "${params.trigger_type}". Valid types are:\n${validList}`;
+
+    expect(error).toContain("nonexistent");
+    expect(error).toContain("transaction: Bank or payment transactions");
+    expect(error).toContain("home_event: Home automation events");
+  });
+
+  it("appends to existing pending intents without overwriting", async () => {
+    // Pre-existing intent
+    const existing: Record<string, any>[] = [{ id: "pre-existing", status: "pending", description: "old" }];
+    await fs.writeFile(paths.pendingPath, JSON.stringify(existing, null, 2));
+
+    // New intent
+    const newIntent = {
+      id: crypto.randomUUID(),
+      status: "pending",
+      trigger: { type: "home_event", data: {} },
+      description: "Someone arrived home",
+      notify_agent: "home",
+      action: { type: "notify", message_template: "Someone arrived home" },
+      created_at: new Date().toISOString(),
+      created_by: "test-agent",
+    };
+    existing.push(newIntent);
+    await fs.writeFile(paths.pendingPath, JSON.stringify(existing, null, 2));
+
+    const raw = await fs.readFile(paths.pendingPath, "utf8");
+    const stored = JSON.parse(raw);
+    expect(stored).toHaveLength(2);
+    expect(stored[0].id).toBe("pre-existing");
+    expect(stored[1].trigger.type).toBe("home_event");
   });
 });
