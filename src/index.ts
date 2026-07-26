@@ -7,13 +7,6 @@ import * as os from "node:os";
 import { execSync } from "node:child_process";
 import * as crypto from "node:crypto";
 
-// Type for the plugin API object captured from the register callback.
-// We only use a small slice of it, so a minimal interface avoids pulling internal types.
-interface PluginRuntimeGateway {
-  isAvailable: () => Promise<boolean>;
-  request: <T = unknown>(method: string, params?: Record<string, unknown>, options?: { timeoutMs?: number }) => Promise<T>;
-}
-
 // Default values — all overridable via configSchema.
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
 const DEFAULT_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -230,10 +223,6 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
     const windows = {
       recentActivityWindowMs: config.recentActivityWindowMs ?? DEFAULT_ACTIVITY_WINDOW_MS,
     };
-    // Capture the gateway runtime surface so tool execute functions can dispatch
-    // Gateway methods in-process instead of shelling out to the CLI.
-    const gatewayRuntime: PluginRuntimeGateway | undefined = api.runtime?.gateway;
-
     api.on("before_prompt_build", async (_event, ctx) => {
       const agentId = ctx.agentId;
       if (!agentId) return;
@@ -327,34 +316,34 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
             intent.triggered_by = toolCtx.agentId;
             await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2), "utf8");
 
-            // Wake the target agent via in-process Gateway request (preferred) or CLI fallback.
+            // Wake the target agent: enqueue the system event, then trigger an immediate heartbeat.
             // Use session-key agent:${notifyAgent} (without :main suffix) so the gateway
             // resolves the agent's active session (which may be a Discord channel, not main).
             const notifyAgent = intent.notify_agent;
             if (notifyAgent) {
+              const wakeMessage = `Intent ${params.id} triggered: ${params.message ?? ""}`;
+              let woke = false;
               try {
-                const wakeMessage = `Intent ${params.id} triggered: ${params.message ?? ""}`;
                 const sessionKey = `agent:${notifyAgent}`;
-                let woke = false;
-                // Preferred: in-process Gateway request (no shell-out overhead).
-                if (gatewayRuntime && await gatewayRuntime.isAvailable()) {
-                  await gatewayRuntime.request("wake", {
-                    text: wakeMessage,
-                    sessionKey,
-                    mode: "now",
-                  }, { timeoutMs: 15000 });
-                  woke = true;
-                }
-                // Fallback: CLI shell-out when the in-process Gateway surface is unavailable.
-                if (!woke) {
+                // Enqueue the system event for the target agent's session
+                api.runtime.system.enqueueSystemEvent(wakeMessage, { sessionKey });
+                // Trigger an immediate heartbeat cycle to wake the agent
+                await api.runtime.system.runHeartbeatOnce({ reason: "intent-triggered" });
+                woke = true;
+              } catch (err) {
+                // Fall back to CLI shell-out if the SDK path fails
+                try {
                   execSync(
                     `${OPENCLAW_BIN} system event --session-key agent:${notifyAgent} --text "${wakeMessage.replace(/"/g, '\\"')}" --mode now`,
                     { timeout: 15000, stdio: "ignore" },
                   );
+                  woke = true;
+                } catch (fallbackErr) {
+                  // Injection will surface on the target's next turn regardless
                 }
-              } catch (error) {
-                // Wake failure doesn't fail the tool — injection will surface it on the target's next turn anyway.
-                console.error(`[intent-context] failed to wake agent ${notifyAgent} for intent ${params.id}:`, error);
+              }
+              if (!woke) {
+                console.error(`[intent-context] failed to wake agent ${notifyAgent} for intent ${params.id}`);
               }
             }
           } else if (params.status === "completed") {
