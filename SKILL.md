@@ -53,7 +53,7 @@ intent_update(id: string, status: "triggered" | "completed", message?: string, t
 - `message` — what you saw and why it matched (required when triggering)
 - `trigger_data` — optional structured data for the target agent
 
-When status is `"triggered"`, the plugin stores your message and data on the intent and wakes the target agent with a system event. The target agent sees the trigger in its ACTION NEEDED block on its next turn.
+When status is `"triggered"`, the plugin stores your message and data on the intent and enqueues a next-turn injection for the target agent. The target agent sees the trigger in its ACTION NEEDED block on its next turn.
 
 ### list_trigger_types
 
