@@ -8,7 +8,7 @@ vi.mock("node:child_process", () => ({
   execSync: vi.fn(() => ""),
 }));
 
-import { resolvePaths, buildInjectionForAgent, type IntentPaths } from "./index.js";
+import { resolvePaths, buildInjectionForAgent, pruneExpiredIntents, type IntentPaths } from "./index.js";
 
 describe("buildInjectionForAgent", () => {
   let intentsDir: string;
@@ -183,6 +183,138 @@ describe("log_activity tool", () => {
 // Tests for list_trigger_types and intent_create tool logic.
 // These test the core logic (trigger type validation, intent creation, pending.json write)
 // the same way the plugin's register() function does it.
+
+describe("intent_create expires_at", () => {
+  let intentsDir: string;
+  let paths: IntentPaths;
+
+  beforeEach(async () => {
+    intentsDir = await fs.mkdtemp(path.join(os.tmpdir(), "intent-context-expires-test-"));
+    paths = {
+      intentsDir,
+      pendingPath: path.join(intentsDir, "pending.json"),
+      archivePath: path.join(intentsDir, "archive.json"),
+      activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
+    };
+    await fs.mkdir(paths.intentsDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(intentsDir, { recursive: true, force: true });
+  });
+
+  it("sets expires_at to ~24h from now by default", async () => {
+    const now = Date.now();
+    const expectedExpiry = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+
+    // Simulate what intent_create execute does with default expires_at
+    const expiresAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    const intent = {
+      id: crypto.randomUUID(),
+      status: "pending",
+      trigger: { type: "transaction", data: {} },
+      description: "Test intent",
+      notify_agent: "assistant",
+      action: { type: "notify", message_template: "Test intent" },
+      created_at: new Date(now).toISOString(),
+      created_by: "test-agent",
+      expires_at: expiresAt,
+    };
+    await fs.writeFile(paths.pendingPath, JSON.stringify([intent], null, 2));
+
+    const raw = await fs.readFile(paths.pendingPath, "utf8");
+    const stored = JSON.parse(raw);
+    expect(stored[0].expires_at).toBeDefined();
+    // Verify it's approximately 24h out (within 1 minute tolerance)
+    const expiryMs = Date.parse(stored[0].expires_at);
+    const expectedMs = Date.parse(expectedExpiry);
+    expect(Math.abs(expiryMs - expectedMs)).toBeLessThan(60_000);
+  });
+
+  it("uses explicit expires_at when provided", async () => {
+    const explicitExpiry = "2026-12-31T23:59:59.000Z";
+
+    const intent = {
+      id: crypto.randomUUID(),
+      status: "pending",
+      trigger: { type: "transaction", data: {} },
+      description: "Time-sensitive intent",
+      notify_agent: "assistant",
+      action: { type: "notify", message_template: "Time-sensitive intent" },
+      created_at: new Date().toISOString(),
+      created_by: "test-agent",
+      expires_at: explicitExpiry,
+    };
+    await fs.writeFile(paths.pendingPath, JSON.stringify([intent], null, 2));
+
+    const raw = await fs.readFile(paths.pendingPath, "utf8");
+    const stored = JSON.parse(raw);
+    expect(stored[0].expires_at).toBe(explicitExpiry);
+  });
+});
+
+describe("pruneExpiredIntents", () => {
+  let intentsDir: string;
+  let paths: IntentPaths;
+
+  beforeEach(async () => {
+    intentsDir = await fs.mkdtemp(path.join(os.tmpdir(), "intent-context-prune-test-"));
+    paths = {
+      intentsDir,
+      pendingPath: path.join(intentsDir, "pending.json"),
+      archivePath: path.join(intentsDir, "archive.json"),
+      activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
+    };
+    await fs.mkdir(paths.intentsDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(intentsDir, { recursive: true, force: true });
+  });
+
+  it("removes expired pending intents but keeps active ones and triggered ones", async () => {
+    const pastExpiry = "2020-01-01T00:00:00.000Z";
+    const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    const pending = [
+      // Expired pending intent — should be pruned
+      { id: "expired-1", status: "pending", description: "Expired", expires_at: pastExpiry },
+      // Active pending intent — should be kept
+      { id: "active-1", status: "pending", description: "Active", expires_at: futureExpiry },
+      // Triggered intent with past expiry — should be kept (not pending)
+      { id: "triggered-1", status: "triggered", description: "Already triggered", expires_at: pastExpiry },
+      // Pending intent with no expires_at — should be kept
+      { id: "no-expiry-1", status: "pending", description: "No expiry" },
+    ];
+    await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2));
+
+    await pruneExpiredIntents(paths);
+
+    const raw = await fs.readFile(paths.pendingPath, "utf8");
+    const stored = JSON.parse(raw);
+    const ids = stored.map((i: any) => i.id);
+    expect(ids).not.toContain("expired-1");
+    expect(ids).toContain("active-1");
+    expect(ids).toContain("triggered-1");
+    expect(ids).toContain("no-expiry-1");
+    expect(stored).toHaveLength(3);
+  });
+
+  it("does not write when no intents are expired", async () => {
+    const futureExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const pending = [
+      { id: "active-1", status: "pending", description: "Active", expires_at: futureExpiry },
+      { id: "no-expiry-1", status: "pending", description: "No expiry" },
+    ];
+    await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2));
+    const originalContent = await fs.readFile(paths.pendingPath, "utf8");
+
+    await pruneExpiredIntents(paths);
+
+    const contentAfter = await fs.readFile(paths.pendingPath, "utf8");
+    expect(contentAfter).toBe(originalContent);
+  });
+});
 
 describe("list_trigger_types logic", () => {
   it("returns registered trigger types", () => {

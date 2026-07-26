@@ -197,6 +197,20 @@ async function pruneLogFile(filePath: string, retentionMs: number, now: number =
   await fs.writeFile(filePath, kept.length > 0 ? `${body}\n` : "", "utf8");
 }
 
+export async function pruneExpiredIntents(paths: IntentPaths): Promise<void> {
+  const now = new Date().toISOString();
+  const pending = await readJsonArray(paths.pendingPath);
+  const active = pending.filter((intent: any) => {
+    if (intent.expires_at && intent.status === "pending" && now > intent.expires_at) {
+      return false; // expired
+    }
+    return true;
+  });
+  if (active.length !== pending.length) {
+    await fs.writeFile(paths.pendingPath, JSON.stringify(active, null, 2));
+  }
+}
+
 const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
   id: "intent-context",
   name: "Intent Context",
@@ -227,6 +241,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
       // Timer only prunes the activity log now — no more notify executor.
       intervalHandle = setInterval(() => {
         pruneLogFile(paths.activityLogPath, logRetentionMs).catch(() => {});
+        pruneExpiredIntents(paths).catch(() => {});
       }, 60_000);
     });
     api.on("gateway_stop", async () => {
@@ -373,6 +388,9 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
           action_message_template: Type.Optional(Type.String({
             description: "Optional message template for the notification. Use {{key}} placeholders that get filled from trigger_data when the intent is triggered.",
           })),
+          expires_at: Type.Optional(Type.String({
+            description: "ISO 8601 timestamp when this intent should expire if never triggered. Defaults to 24 hours from now. Use this for time-sensitive watch conditions.",
+          })),
         }),
         execute: async (_toolCallId: string, params: {
           trigger_type: string;
@@ -381,6 +399,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
           notify_agent: string;
           action_type?: "notify" | "agent_task";
           action_message_template?: string;
+          expires_at?: string;
         }) => {
           // Validate trigger_type against registry
           const validTypes = config.triggerTypes || {};
@@ -396,6 +415,9 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
 
           // Read pending.json
           const pending = await readJsonArray(paths.pendingPath);
+
+          // Default: 24 hours from now
+          const expiresAt = params.expires_at || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
           // Create new intent
           const intent = {
@@ -413,6 +435,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
             },
             created_at: new Date().toISOString(),
             created_by: toolCtx.agentId,
+            expires_at: expiresAt,
           };
 
           pending.push(intent);

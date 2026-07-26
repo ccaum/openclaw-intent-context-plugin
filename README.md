@@ -67,6 +67,7 @@ intent_create(trigger_type: string, description: string, notify_agent: string, t
 - `trigger_data` — optional structured data describing what to watch for
 - `action_type` — `"notify"` (default) just wakes the target agent. `"agent_task"` surfaces it for the agent to decide
 - `action_message_template` — optional message template with `{{key}}` placeholders filled from `trigger_data`
+- `expires_at` — optional ISO 8601 timestamp. Defaults to 24 hours from creation. Intents that expire before being triggered are automatically pruned.
 
 If the trigger type is not in the registry, the tool returns an error listing all valid types.
 

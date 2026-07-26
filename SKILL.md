@@ -68,6 +68,21 @@ You see an ACTION NEEDED intent in your context, you've taken the action it requ
 
 This marks the intent as done so it stops appearing in ACTION NEEDED.
 
+### intent_create
+```
+intent_create(trigger_type: string, description: string, notify_agent: string, trigger_data?: object, action_type?: "notify" | "agent_task", action_message_template?: string, expires_at?: string)
+```
+
+Create a new pending intent for the system to watch for. The trigger type must be a registered type (use `list_trigger_types` to see valid types).
+
+- `trigger_type` — must be a registered type
+- `description` — human-readable description of what condition to watch for
+- `notify_agent` — the agent id that should be notified when triggered
+- `trigger_data` — optional structured data describing what to watch for
+- `action_type` — `"notify"` (default) or `"agent_task"`
+- `action_message_template` — optional message template with `{{key}}` placeholders
+- `expires_at` — optional ISO 8601 timestamp. Defaults to 24 hours from creation. Intents that expire before being triggered are automatically pruned.
+
 ## How Agents Coordinate
 
 The intent system lets agents coordinate without direct messaging:
