@@ -1,14 +1,16 @@
 # OpenClaw Intent Context Plugin
 
-The Intent Context plugin gives OpenClaw agents passive awareness of each other and mechanically executes notification-type triggered intents. It injects relevant pending intents and recent cross-agent activity into each agent's turn as it happens, so agents can act on what's going on across the system without being explicitly told. It also runs a background timer that delivers `notify`-type triggered intents via `openclaw message send`, so deterministic notifications fire without burning an LLM turn. No agent is ever actively woken — everything surfaces on whatever turn happens next.
+The Intent Context plugin gives OpenClaw agents passive awareness of what other agents are doing and lets them watch for future events as part of their normal operation. It injects recent activity from other agents and pending conditions an agent should be watching for into each agent's turn as it happens, so agents can coordinate and react without being explicitly told. When an agent recognizes a watched condition and triggers an intent, the plugin wakes the target agent so it can act on it. No agent is ever actively woken unnecessarily — everything surfaces on whatever turn happens next.
 
-Without this plugin, OpenClaw agents operate in isolation. They have no visibility into what other agents are doing, what intents are pending in the system, or what events have recently occurred outside their own session. Multi-agent coordination requires manual messaging or cron jobs. Notifications that should fire automatically when an intent is triggered either need a full LLM-backed agent turn every poll cycle (expensive and slow) or don't happen at all. External systems like home automation pipelines, transaction monitors, or email processors have no way to surface events to agents — they'd need to actively wake an agent or send a message, which is heavy, intrusive, and doesn't scale across multiple agents. Cross-agent awareness, automated notification delivery, and external event ingestion are all left unsolved.
+Without this plugin, OpenClaw agents operate in isolation. An orchestration agent can't see when a coder finishes a build, a QA agent passes or fails a test, or an operations agent deploys a fix — unless someone explicitly sends a message each time. But agents rarely know what's worth notifying another agent about, so coordination breaks down or requires manual handoffs. Personal assistant agents face the same problem: they can't decide when to mention relevant activity from other agents to their user without being prompted, because they don't have that activity in context. Beyond cross-agent awareness, asking an agent to watch for a future event and react to it required a cron job to continuously poll for the condition. You couldn't tell your assistant agent "let me know when the refund hits my bank account" and have a monitoring agent watch for that condition as part of its normal routine and take action when it sees the match — because there was no mechanism to surface the watch condition to the monitoring agent in the first place, and no way for the monitoring agent to hand the result back to the assistant without direct messaging.
 
-The plugin solves these problems through passive context injection and a mechanical notify executor. A `before_prompt_build` hook reads pending intents and recent activity from shared log files and injects them into whichever agent turn is already happening — so agents see what's pending, what's been triggered and assigned to them, and what other agents have been doing, all without any active wake. The `log_activity` tool lets any agent or external system append to the activity log via a simple HTTP call, so home automation pipelines, transaction monitors, and other services can surface events the same way agents do. A `gateway_start` timer mechanically executes `notify`-type triggered intents by rendering the message template and sending it via `openclaw message send` — no LLM turn needed, no agent judgment required, just deterministic delivery on a timer.
+The plugin solves both problems through passive context injection and intent lifecycle tools. A `before_prompt_build` hook reads recent activity from other agents and pending watch conditions from shared log files and injects them into whichever agent turn is already happening — so an orchestration agent sees when the coder shipped, a personal assistant knows what other agents have been doing, and a monitoring agent sees what conditions it should be watching for in its normal flow. Any agent or external system can append to the activity log via a simple HTTP call, so home automation pipelines, transaction monitors, and email processors can surface events the same way agents do. When an agent recognizes a condition and triggers an intent using the `intent_update` tool, the plugin wakes the target agent with a system event so it sees the trigger on its next turn — the monitoring agent doesn't need to know how to reach the assistant, and the assistant doesn't need to be running when the condition is met. The target agent reads the triggering agent's message, takes action, and marks the intent complete.
 
-## The `log_activity` Tool
+## Tools
 
-The plugin registers a `log_activity` tool that any agent or external system can use to append to the shared ambient-activity log:
+### log_activity
+
+Append a short note about what you're doing to the shared activity log. Other agents see it in their RECENT ACTIVITY block on their next turn. Does not notify or wake anyone.
 
 ```
 log_activity(text: string, agent?: string)
@@ -26,18 +28,39 @@ curl -sS http://127.0.0.1:18789/tools/invoke \
   -d '{"tool":"log_activity","args":{"text":"Driveway: vehicle arrived","agent":"marlin"}}'
 ```
 
-The entry is appended to `~/.openclaw/intents/recent-activity.jsonl` and surfaces in configured agents' next turn under `RECENT ACTIVITY`.
+### intent_update
+
+Update the lifecycle of an intent. Trigger an intent when you see a condition match, or complete it when you've acted on it.
+
+```
+intent_update(id: string, status: "triggered" | "completed", message?: string, trigger_data?: object)
+```
+
+- `id` — the intent ID to update
+- `status` — `"triggered"` (condition met, wake target agent) or `"completed"` (action taken, close out)
+- `message` — what you saw and why it matched (required when triggering)
+- `trigger_data` — optional structured data for the target agent
+
+When status is `"triggered"`, the plugin stores the message and data on the intent and wakes the target agent via `openclaw system event`. The target agent sees the trigger in its ACTION NEEDED block on its next turn.
+
+## Context Injection Blocks
+
+Agents may see these blocks at the top of their turn. They are background context, not user requests.
+
+- **WATCHING FOR** — pending intents matching the agent's configured `watchedTriggerTypes`. Conditions the agent should watch for during its normal work.
+- **ACTION NEEDED** — triggered intents assigned to the agent. Another agent recognized a condition and triggered an intent for this agent to act on. Includes the triggering agent's message and any structured data.
+- **RECENT ACTIVITY** — recent `log_activity` entries from other agents. Background awareness of what's happening across the system.
 
 ## Architecture
 
-**Passive injection, never active wake.** The plugin reads local files and injects context into turns that are already happening. It never triggers a new turn.
+**Passive injection, never active wake.** The plugin reads local files and injects context into turns that are already happening. The only active wake is when an intent is triggered — the plugin enqueues a system event for the target agent so it sees ACTION NEEDED on its next turn.
 
 **Data sources** (all under `~/.openclaw/intents/`):
 
 | File | Written by | Surfaces as |
 |------|-----------|-------------|
-| `pending.json` | intent system | `WATCHING FOR` + `ACTION NEEDED` |
-| `recent-activity.jsonl` | `log_activity` tool | `RECENT ACTIVITY` |
+| `pending.json` | intent system, `intent_update` tool | WATCHING FOR + ACTION NEEDED |
+| `recent-activity.jsonl` | `log_activity` tool | RECENT ACTIVITY |
 
 **Per-agent filtering** is entirely read-time, from `config.agents[agentId]`:
 
@@ -47,9 +70,7 @@ The entry is appended to `~/.openclaw/intents/recent-activity.jsonl` and surface
 
 If an agent has no entry in `config.agents`, the hook returns early and injects nothing.
 
-**Notify executor** (`gateway_start` timer, default 60s): scans `pending.json` and `archive.json` for `status="triggered"` + `action.type="notify"`, renders `action.message_template` against `trigger_data` (`{{key}}` substitution, missing → `"N/A"`), shells out to `openclaw message send`, then sets `status="completed"` in place. `agent_task`-type intents are deliberately left alone — those need judgment and surface via injection instead.
-
-Concurrency is guarded by a `mkdir`-based lock at `~/.openclaw/intents/.lock` with stale detection and automatic reclaim.
+A `gateway_start` timer prunes `recent-activity.jsonl` to a configurable retention window.
 
 ## Build
 
@@ -65,7 +86,6 @@ npm run plugin:build
 
 - `openclaw plugins build --entry …` and `openclaw plugins validate --entry …` do not work for this plugin. Do not use them.
 - `openclaw.plugin.json` is **hand-authored** — it is not generated by a build step. Edit it directly if you change the config schema or tool parameters.
-- There is no `plugin:validate` script.
 
 ## Configuration
 
@@ -84,11 +104,8 @@ Add to `~/.openclaw/openclaw.json` under `plugins.entries.intent-context`:
         "watchedTriggerTypes": ["home_event", "device_presence"]
       }
     },
-    "notifyExecutorIntervalMs": 60000,
     "recentActivityWindowMs": 86400000,
-    "logRetentionMs": 172800000,
-    "openclawBin": "/opt/homebrew/bin/openclaw",
-    "fallbackNotifyChannel": "bluebubbles"
+    "logRetentionMs": 172800000
   }
 }
 ```
@@ -102,11 +119,8 @@ Add to `~/.openclaw/openclaw.json` under `plugins.entries.intent-context`:
 | `agents.<id>.watchedTriggerTypes` | — | Trigger types to watch for in pending intents |
 | `agents.<id>.actorFor` | — | `notify_agent` values this agent acts on |
 | `agents.<id>.ambientScope` | — | `"all"` or array of agent ids to see activity from |
-| `notifyExecutorIntervalMs` | `60000` | Poll interval for the notify executor |
 | `recentActivityWindowMs` | `21600000` (6h) | How far back to surface activity entries |
 | `logRetentionMs` | `172800000` (48h) | Retention for pruning the activity log |
-| `openclawBin` | `/opt/homebrew/bin/openclaw` | Path to the openclaw CLI binary |
-| `fallbackNotifyChannel` | `bluebubbles` | Channel used when an intent's `action.channel` is unset |
 
 ## Installation
 
