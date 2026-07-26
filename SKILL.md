@@ -21,6 +21,8 @@ You're processing an event (email arrived, transaction synced, person detected, 
 
 ## Tools
 
+These are **native OpenClaw tools**, not shell commands. Call them directly as tool calls — do not run them via `exec` or pipe into them.
+
 ### intent_create
 
 Create a new pending intent. The trigger type must be registered in the plugin's `triggerTypes` config.
