@@ -317,22 +317,19 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
             await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2), "utf8");
 
             // Wake the target agent: enqueue the system event, then trigger an immediate heartbeat.
-            // Use session-key agent:${notifyAgent} (without :main suffix) so the gateway
-            // resolves the agent's active session (which may be a Discord channel, not main).
+            // Wake the target agent: enqueue a system event to the agent's :main session key.
+            // The event sits in the session queue and is picked up by the agent's scheduled
+            // heartbeat (every 15m, reason="cron"). With target:"last" in the heartbeat config,
+            // the response delivers to the last active channel.
             const notifyAgent = intent.notify_agent;
             if (notifyAgent) {
               const wakeMessage = `Intent ${params.id} triggered: ${params.message ?? ""}`;
               let woke = false;
               try {
-                const sessionKey = `agent:${notifyAgent}`;
-                api.logger.info(`IC-F002 wake: enqueueing system event sessionKey=${sessionKey} intentId=${params.id} notifyAgent=${notifyAgent}`);
+                const sessionKey = `agent:${notifyAgent}:main`;
                 api.runtime.system.enqueueSystemEvent(wakeMessage, { sessionKey });
-                api.logger.info(`IC-F002 wake: calling requestHeartbeat agentId=${notifyAgent} sessionKey=${sessionKey}`);
-                api.runtime.system.requestHeartbeat({ source: "other", intent: "event", reason: "intent-triggered", agentId: notifyAgent, sessionKey });
-                api.logger.info(`IC-F002 wake: requestHeartbeat queued sessionKey=${sessionKey}`);
                 woke = true;
               } catch (err) {
-                api.logger.error(`IC-F002 wake: SDK path failed: ${String(err)}`);
                 // Fall back to CLI shell-out if the SDK path fails
                 try {
                   execSync(

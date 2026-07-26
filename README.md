@@ -122,9 +122,79 @@ A home automation pipeline detects someone arriving home. It doesn't run as an O
 
 The pipeline doesn't need to know which agent cares about driveway events. It just logs activity. Any agent with `ambientScope` including `"motion-pipeline"` sees it.
 
+## Wake Mechanism
+
+When an intent is triggered via `intent_update`, the plugin wakes the target agent so it sees the trigger on its next turn. The wake mechanism works as follows:
+
+1. **`enqueueSystemEvent`** — The plugin calls `api.runtime.system.enqueueSystemEvent(wakeMessage, { sessionKey })` where `sessionKey` is `agent:{notifyAgent}:main`. This enqueues a system event into the target agent's main session queue.
+2. **Scheduled heartbeat pickup** — The event sits in the session queue until the agent's scheduled heartbeat fires (every 15 minutes by default, with `reason: "cron"`). The heartbeat inspects pending system events and processes them.
+3. **`target: "last"` delivery** — For the wake to actually reach the user, the target agent's heartbeat config must include `target: "last"`. This ensures the heartbeat response is delivered to the last active channel (e.g. the most recent Discord channel the agent was talking in), rather than a default or stale channel.
+
+### Session Key Format
+
+The session key **must** be `agent:{agentId}:main` — for example, `agent:assistant:main`. This is the queue the scheduled heartbeat reads from. Using a key without `:main` (e.g. `agent:assistant`) will not land the event in the correct queue.
+
+### Configuration Requirement
+
+The `notify_agent` specified in an intent must have heartbeat enabled with `target: "last"` in its agent config for wake delivery to work. Without heartbeat, the enqueued system event will never be picked up. Without `target: "last"`, the heartbeat response may go to a channel the user isn't watching.
+
+```json
+{
+  "agents": {
+    "assistant": {
+      "heartbeat": {
+        "interval": "15m",
+        "target": "last"
+      }
+    }
+  }
+}
+```
+
+### Fallback
+
+If `enqueueSystemEvent` throws (e.g. the SDK path is unavailable), the plugin falls back to a CLI shell-out: `openclaw system event --session-key agent:{notifyAgent} --text "..." --mode now`. If both paths fail, the trigger still surfaces passively — the target agent will see it in ACTION NEEDED on whatever its next turn happens to be.
+
+## Tools
+
+### intent_update
+
+Update the lifecycle of an intent. Trigger an intent when you see a condition match, or complete it when you've acted on it.
+
+```
+intent_update(id: string, status: "triggered" | "completed", message?: string, trigger_data?: object)
+```
+
+- `id` — the intent ID to update
+- `status` — `"triggered"` (condition met, wake target agent) or `"completed"` (action taken, close out)
+- `message` — what you saw and why it matched (required when triggering)
+- `trigger_data` — optional structured data for the target agent
+
+When status is `"triggered"`, the plugin stores the message and data on the intent and enqueues a system event to `agent:{notifyAgent}:main` to wake the target agent. The target agent sees the trigger in its ACTION NEEDED block when its scheduled heartbeat picks up the event.
+
+### intent_create
+
+Create a new pending intent for the system to watch for. The trigger type must be a registered type (use `list_trigger_types` to see valid types). The `notify_agent` is the agent that should be woken when the condition is met.
+
+```
+intent_create(trigger_type: string, description: string, notify_agent: string, trigger_data?: object, action_type?: "notify" | "agent_task", action_message_template?: string)
+```
+
+- `trigger_type` — must be a registered type (see `list_trigger_types`)
+- `description` — human-readable description of what condition to watch for
+- `notify_agent` — the agent id that should be notified when triggered
+- `trigger_data` — optional structured data describing what to watch for
+- `action_type` — `"notify"` (default) just wakes the target agent. `"agent_task"` surfaces it for the agent to decide
+- `action_message_template` — optional message template with `{{key}}` placeholders filled from `trigger_data`
+- `expires_at` — optional ISO 8601 timestamp. Defaults to 24 hours from creation. Intents that expire before being triggered are automatically pruned.
+
+If the trigger type is not in the registry, the tool returns an error listing all valid types.
+
 ## Architecture
 
 **Passive injection, never active wake.** The plugin reads local files and injects context into turns that are already happening. The only active wake is when an intent is triggered — the plugin enqueues a system event for the target agent so it sees ACTION NEEDED on its next turn.
+
+**Wake via system events.** The wake mechanism uses `enqueueSystemEvent` to enqueue a system event to the `agent:{notifyAgent}:main` session key. The event is picked up by the target agent's scheduled heartbeat (every 15m, `reason: "cron"`). With `target: "last"` in the heartbeat config, the response delivers to the last active channel. This replaced earlier approaches that tried `runHeartbeatOnce` (which always skipped with "requests-in-flight" when called from a tool handler) and `requestHeartbeat` (which never successfully fired).
 
 **Data sources** (all under `~/.openclaw/intents/`):
 
