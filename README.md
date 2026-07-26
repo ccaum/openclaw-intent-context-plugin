@@ -51,6 +51,49 @@ Agents may see these blocks at the top of their turn. They are background contex
 - **ACTION NEEDED** — triggered intents assigned to the agent. Another agent recognized a condition and triggered an intent for this agent to act on. Includes the triggering agent's message and any structured data.
 - **RECENT ACTIVITY** — recent `log_activity` entries from other agents. Background awareness of what's happening across the system.
 
+## Examples
+
+### Development Orchestration
+
+A product manager agent (Pax) coordinates a team of development agents: a coder, a QA tester (Probe), and an operations agent. The coder is building a feature, Probe needs to test it when it's ready, and Pax needs to know when it ships.
+
+1. Pax creates an intent: watch for `build_complete` events, notify Pax. The coder has `watchedTriggerTypes: ["build_complete"]` in its config.
+2. The coder finishes the build and calls `log_activity("Feature X build complete, commit abc123, all tests pass")`.
+3. Pax sees this in RECENT ACTIVITY on his next turn — no message needed, the coder didn't have to know Pax cares about this.
+4. The coder also sees the WATCHING FOR intent in its context (it was there the whole time), recognizes the build is complete, and calls `intent_update(id, "triggered", message="Build abc123 passed all 48 tests, ready for QA")`.
+5. The plugin wakes Pax with a system event. Pax sees ACTION NEEDED on his next turn with the coder's message.
+6. Pax dispatches Probe to test the build, and when Probe reports back, Pax marks the intent complete with `intent_update(id, "completed")`.
+
+Throughout this flow, no agent actively messaged another. The coder logged activity passively. Pax saw it without being told. The intent handoff went through the plugin, not through direct messaging.
+
+### Watching for a Transaction
+
+A user tells their assistant agent (Silas): "Let me know when the refund from Acme hits my account." A transaction monitoring agent (Roger) processes bank transactions as part of his normal routine.
+
+1. Silas creates an intent: watch for a transaction matching "refund from Acme", notify Silas. Roger has `watchedTriggerTypes: ["transaction"]` in his config.
+2. Roger is processing the day's transactions as part of his normal work. He sees WATCHING FOR in his context: "refund from Acme over $200".
+3. Roger notices a $500 refund from Acme in the transaction feed. He calls `intent_update(id, "triggered", message="Refund of $500 from Acme posted today", trigger_data={"amount": 500, "merchant": "Acme", "date": "2026-07-25"})`.
+4. The plugin wakes Silas with a system event. Silas sees ACTION NEEDED on his next turn: "From Roger: Refund of $500 from Acme posted. Data: {amount: 500, merchant: Acme, date: 2026-07-25}."
+5. Silas notifies the user via iMessage and calls `intent_update(id, "completed")`.
+
+Roger didn't need to know how to reach Silas. Silas didn't need to be running when the refund posted. The intent carried the context — what to watch for, who to notify — through the full chain.
+
+### External System Integration
+
+A home automation pipeline (marlin) detects someone arriving home. It doesn't run as an OpenClaw agent, but it can still surface events to agents that do.
+
+1. The pipeline detects a vehicle in the driveway and calls `/tools/invoke` on the gateway:
+   ```bash
+   curl -sS http://127.0.0.1:18789/tools/invoke \
+     -H "Authorization: Bearer $GATEWAY_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"tool":"log_activity","args":{"text":"Driveway: vehicle arrived, Carl home","agent":"marlin"}}'
+   ```
+2. A home awareness agent (Scout) sees this in RECENT ACTIVITY on its next turn. Scout didn't need to be running when the event happened — it sees it whenever its next turn occurs.
+3. Scout can then take action: log the arrival, check if any home automation intents match, or notify the user if configured to do so.
+
+The pipeline doesn't need to know which agent cares about driveway events. It just logs activity. Any agent with `ambientScope` including `"marlin"` sees it.
+
 ## Architecture
 
 **Passive injection, never active wake.** The plugin reads local files and injects context into turns that are already happening. The only active wake is when an intent is triggered — the plugin enqueues a system event for the target agent so it sees ACTION NEEDED on its next turn.
