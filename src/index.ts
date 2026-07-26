@@ -4,21 +4,13 @@ import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { execSync } from "node:child_process";
 
 // Default values — all overridable via configSchema.
-const DEFAULT_OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
-const DEFAULT_NOTIFY_INTERVAL_MS = 60_000;
 const DEFAULT_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_LOG_RETENTION_MS = 48 * 60 * 60 * 1000;
-const DEFAULT_FALLBACK_NOTIFY_CHANNEL = "bluebubbles";
-const LOCK_STALE_MS = 5 * 60 * 1000; // 5 minutes
-const LOCK_RETRY_COUNT = 5;
-const LOCK_RETRY_DELAY_MS = 1000;
+const OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
 
 function expandHome(p: string): string {
   if (p === "~") return os.homedir();
@@ -41,10 +33,7 @@ export const ConfigSchema = Type.Object(
     agents: Type.Record(Type.String(), AgentAwarenessConfigSchema, {
       description: "Per-agent awareness config, keyed by agentId.",
     }),
-    notifyExecutorIntervalMs: Type.Optional(Type.Number({ description: "Poll interval for the mechanical notify executor. Default 60000." })),
     recentActivityWindowMs: Type.Optional(Type.Number({ description: "How far back to surface ambient-activity entries. Default 6h." })),
-    openclawBin: Type.Optional(Type.String({ description: "Path to the openclaw CLI binary. Default /opt/homebrew/bin/openclaw." })),
-    fallbackNotifyChannel: Type.Optional(Type.String({ description: "Channel used when an intent's action.channel is unset. Default bluebubbles." })),
     logRetentionMs: Type.Optional(Type.Number({ description: "Retention window for pruning recent-activity.jsonl. Default 48h." })),
   },
   { additionalProperties: false },
@@ -57,7 +46,6 @@ export interface IntentPaths {
   pendingPath: string;
   archivePath: string;
   activityLogPath: string;
-  lockDir: string;
 }
 
 export function resolvePaths(config: Pick<PluginConfig, "intentsDir">): IntentPaths {
@@ -67,7 +55,6 @@ export function resolvePaths(config: Pick<PluginConfig, "intentsDir">): IntentPa
     pendingPath: path.join(intentsDir, "pending.json"),
     archivePath: path.join(intentsDir, "archive.json"),
     activityLogPath: path.join(intentsDir, "recent-activity.jsonl"),
-    lockDir: path.join(intentsDir, ".lock"),
   };
 }
 
@@ -141,11 +128,19 @@ export async function buildInjectionForAgent(
     if (acting.length > 0) {
       sections.push(
         [
-          "ACTION NEEDED (triggered intents assigned to you):",
-          ...acting.map(
-            (item) =>
-              `- [${item.id}] ${item.description} — action: ${JSON.stringify(item.action ?? {})} — data: ${JSON.stringify(item.trigger_data ?? {})}`,
-          ),
+          "ACTION NEEDED (triggered intents for you to act on):",
+          ...acting.map((item) => {
+            const title = item.title || item.description;
+            let line = `- [${item.id}] ${title}`;
+            if (item.trigger_message) {
+              const from = item.triggered_by ?? "unknown";
+              line += `\n  From ${from}: "${item.trigger_message}"`;
+            }
+            if (item.trigger_data && Object.keys(item.trigger_data).length > 0) {
+              line += `\n  Data: ${JSON.stringify(item.trigger_data)}`;
+            }
+            return line;
+          }),
         ].join("\n"),
       );
     }
@@ -177,164 +172,6 @@ export async function buildInjectionForAgent(
   ].join("\n\n");
 }
 
-function renderTemplate(template: string, data: Record<string, unknown>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_match, key) => {
-    const value = data?.[key];
-    return value === undefined || value === null ? "N/A" : String(value);
-  });
-}
-
-// Writes a metadata file inside the lock directory so we can detect stale locks.
-// The file records the holding PID and a timestamp. If the lock is older than
-// LOCK_STALE_MS we reclaim it by removing and recreating the directory.
-async function writeLockMeta(lockDir: string): Promise<void> {
-  const meta = {
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-  };
-  await fs.writeFile(path.join(lockDir, "lock.meta"), JSON.stringify(meta), "utf8");
-}
-
-async function readLockMeta(lockDir: string): Promise<{ pid: number; startedAt: string } | null> {
-  try {
-    const raw = await fs.readFile(path.join(lockDir, "lock.meta"), "utf8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.pid === "number" && typeof parsed.startedAt === "string") {
-      return { pid: parsed.pid, startedAt: parsed.startedAt };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function isLockStale(lockDir: string, staleMs: number, now: number = Date.now()): Promise<boolean> {
-  const meta = await readLockMeta(lockDir);
-  if (!meta) return true; // No meta file → treat as stale (orphaned or corrupted)
-  const ts = Date.parse(meta.startedAt);
-  if (Number.isNaN(ts)) return true; // Unparseable timestamp → stale
-  return now - ts > staleMs;
-}
-
-async function reclaimLock(lockDir: string): Promise<void> {
-  // Remove the stale lock directory and its contents, then recreate.
-  await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
-  await fs.mkdir(lockDir);
-}
-
-export async function withIntentsLock<T>(
-  lockDir: string,
-  fn: () => Promise<T>,
-  opts?: { staleMs?: number; onLockFailure?: (error: string) => void | Promise<void> },
-): Promise<T> {
-  const staleMs = opts?.staleMs ?? LOCK_STALE_MS;
-  let acquired = false;
-  let lastError = "";
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
-    try {
-      await fs.mkdir(lockDir);
-      acquired = true;
-      break;
-    } catch {
-      // Lock exists — check if it's stale and reclaim.
-      const stale = await isLockStale(lockDir, staleMs);
-      if (stale) {
-        try {
-          await reclaimLock(lockDir);
-          await writeLockMeta(lockDir);
-          acquired = true;
-          break;
-        } catch (reclaimError) {
-          lastError = `Failed to reclaim stale lock at ${lockDir}: ${reclaimError instanceof Error ? reclaimError.message : String(reclaimError)}`;
-        }
-      } else {
-        lastError = `Lock held at ${lockDir} (not stale yet)`;
-      }
-      if (attempt < LOCK_RETRY_COUNT - 1) {
-        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS));
-      }
-    }
-  }
-  if (!acquired) {
-    const msg = `Could not acquire intents lock at ${lockDir} after ${LOCK_RETRY_COUNT} retries: ${lastError}`;
-    if (opts?.onLockFailure) {
-      try { await opts.onLockFailure(msg); } catch { /* don't let alert failure mask the original error */ }
-    }
-    throw new Error(msg);
-  }
-  // Write our lock metadata after acquiring (covers both fresh mkdir and reclaim paths).
-  await writeLockMeta(lockDir);
-  try {
-    return await fn();
-  } finally {
-    await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-export interface NotifyExecutorResult {
-  processed: number;
-}
-
-// Executes status="triggered" + action.type="notify" intents directly —
-// pure mechanical message delivery, no agent judgment needed. Mirrors the
-// retired execute-triggered-intents.sh script's behavior exactly (including
-// updating status in place in whichever file the intent was found, not
-// moving pending -> archive), just running as plugin code instead of an
-// LLM-backed cron turn.
-export async function runNotifyExecutor(
-  paths: IntentPaths,
-  opts?: { openclawBin?: string; fallbackNotifyChannel?: string },
-): Promise<NotifyExecutorResult> {
-  const openclawBin = opts?.openclawBin ?? DEFAULT_OPENCLAW_BIN;
-  const fallbackChannel = opts?.fallbackNotifyChannel ?? DEFAULT_FALLBACK_NOTIFY_CHANNEL;
-  return withIntentsLock(
-    paths.lockDir,
-    async () => {
-      let processed = 0;
-      for (const filePath of [paths.pendingPath, paths.archivePath]) {
-        const items = await readJsonArray(filePath);
-        if (items.length === 0) continue;
-        let changed = false;
-        for (const item of items) {
-          if (item.status !== "triggered" || item.action?.type !== "notify") continue;
-          const template = typeof item.action.message_template === "string" ? item.action.message_template : "";
-          const rendered = renderTemplate(template, item.trigger_data ?? {});
-          const message = rendered.trim().length > 0 ? rendered : item.description ?? "";
-          const channel = item.action.channel ?? fallbackChannel;
-          const args = ["message", "send", "--channel", channel, "-m", message];
-          if (item.action.target) args.push("--target", String(item.action.target));
-          try {
-            await execFileAsync(openclawBin, args, { timeout: 30000 });
-            item.completion_result = `Notification sent via ${channel} to ${item.action.target ?? "default"}`;
-          } catch (error) {
-            item.completion_result = `Failed to send notification: ${error instanceof Error ? error.message : String(error)}`;
-          }
-          item.status = "completed";
-          item.completed_at = new Date().toISOString();
-          changed = true;
-          processed += 1;
-        }
-        if (changed) await fs.writeFile(filePath, JSON.stringify(items, null, 2), "utf8");
-      }
-      return { processed };
-    },
-    {
-      onLockFailure: async (errorMsg: string) => {
-        // Surface persistent lock-acquisition failure so it doesn't silently deadlock.
-        try {
-          await execFileAsync(
-            openclawBin,
-            ["message", "send", "--channel", fallbackChannel, "-m", `[intent-context] ${errorMsg}`],
-            { timeout: 15000 },
-          );
-        } catch {
-          // If we can't send the alert, there's nothing more to do — the error is still thrown.
-        }
-      },
-    },
-  );
-}
-
 async function pruneLogFile(filePath: string, retentionMs: number, now: number = Date.now()): Promise<void> {
   const entries = await readJsonLines(filePath);
   if (entries.length === 0) return;
@@ -348,7 +185,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
   id: "intent-context",
   name: "Intent Context",
   description:
-    "Injects relevant intents, recent domain events, and ambient cross-agent activity into each configured agent's turn (before_prompt_build), and executes mechanical notify-type triggered intents directly. No active wake of any agent — everything surfaces on whatever turn happens next.",
+    "Injects relevant intents, recent domain events, and ambient cross-agent activity into each configured agent's turn (before_prompt_build), and provides tools for logging activity and updating intent lifecycle. No active wake of any agent — everything surfaces on whatever turn happens next.",
   configSchema: buildJsonPluginConfigSchema(ConfigSchema as any),
   register(api) {
     const config = api.pluginConfig as PluginConfig;
@@ -370,18 +207,11 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
     let intervalHandle: ReturnType<typeof setInterval> | undefined;
     api.on("gateway_start", async () => {
       await fs.mkdir(paths.intentsDir, { recursive: true });
-      const intervalMs = config.notifyExecutorIntervalMs ?? DEFAULT_NOTIFY_INTERVAL_MS;
       const logRetentionMs = config.logRetentionMs ?? DEFAULT_LOG_RETENTION_MS;
-      const executorOpts = {
-        openclawBin: config.openclawBin ?? DEFAULT_OPENCLAW_BIN,
-        fallbackNotifyChannel: config.fallbackNotifyChannel ?? DEFAULT_FALLBACK_NOTIFY_CHANNEL,
-      };
+      // Timer only prunes the activity log now — no more notify executor.
       intervalHandle = setInterval(() => {
-        runNotifyExecutor(paths, executorOpts).catch((error) => {
-          console.error("[intent-context] notify executor error", error);
-        });
         pruneLogFile(paths.activityLogPath, logRetentionMs).catch(() => {});
-      }, intervalMs);
+      }, 60_000);
     });
     api.on("gateway_stop", async () => {
       if (intervalHandle) clearInterval(intervalHandle);
@@ -414,6 +244,73 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
         },
       }),
       { name: "log_activity" },
+    );
+
+    api.registerTool(
+      (toolCtx) => ({
+        name: "intent_update",
+        label: "Update Intent",
+        description: "Update the status of an intent. Use status='triggered' when you recognize that a condition an intent is watching for has been met — this stores your message and any structured data on the intent and wakes the target agent so they can act on it. Use status='completed' when you have finished acting on a triggered intent assigned to you.",
+        parameters: Type.Object({
+          id: Type.String({
+            minLength: 1,
+            description: "The intent ID to update.",
+          }),
+          status: Type.Union([
+            Type.Literal("triggered"),
+            Type.Literal("completed"),
+          ], {
+            description: "New status: 'triggered' (condition met, notify target) or 'completed' (action taken, close out).",
+          }),
+          message: Type.Optional(Type.String({
+            description: "Message for the target agent explaining what you saw and why you triggered the intent. Required when status='triggered'.",
+            minLength: 1,
+          })),
+          trigger_data: Type.Optional(Type.Record(Type.String(), Type.Any(), {
+            description: "Optional structured data to attach to the intent (e.g. {\"amount\": 500, \"merchant\": \"Acme\"}). Stored on the intent and visible to the target agent.",
+          })),
+        }),
+        execute: async (_toolCallId: string, params: { id: string; status: "triggered" | "completed"; message?: string; trigger_data?: Record<string, any> }) => {
+          await fs.mkdir(paths.intentsDir, { recursive: true });
+          const pending = await readJsonArray(paths.pendingPath);
+          const intent = pending.find((item) => item.id === params.id);
+          if (!intent) {
+            return jsonResult({ ok: false, error: `Intent ${params.id} not found` });
+          }
+
+          if (params.status === "triggered") {
+            intent.status = "triggered";
+            intent.trigger_data = params.trigger_data ?? {};
+            intent.trigger_message = params.message;
+            intent.triggered_at = new Date().toISOString();
+            intent.triggered_by = toolCtx.agentId;
+            await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2), "utf8");
+
+            // Wake the target agent via openclaw system event.
+            const notifyAgent = intent.notify_agent;
+            if (notifyAgent) {
+              try {
+                const wakeMessage = `Intent ${params.id} triggered: ${params.message ?? ""}`;
+                execSync(
+                  `openclaw system event --session-key agent:${notifyAgent}:main --text "${wakeMessage.replace(/"/g, '\\"')}"`,
+                  { timeout: 15000, stdio: "ignore" },
+                );
+              } catch (error) {
+                // Wake failure doesn't fail the tool — injection will surface it on the target's next turn anyway.
+                console.error(`[intent-context] failed to wake agent ${notifyAgent} for intent ${params.id}:`, error);
+              }
+            }
+          } else if (params.status === "completed") {
+            intent.status = "completed";
+            intent.completed_at = new Date().toISOString();
+            intent.completed_by = toolCtx.agentId;
+            await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2), "utf8");
+          }
+
+          return jsonResult({ ok: true, intent: { id: params.id, status: params.status } });
+        },
+      }),
+      { name: "intent_update" },
     );
   },
 });

@@ -1,7 +1,7 @@
 {
   "id": "intent-context",
   "name": "Intent Context",
-  "description": "Injects relevant intents, recent domain events, and ambient cross-agent activity into each configured agent's turn (before_prompt_build), and executes mechanical notify-type triggered intents directly. No active wake of any agent — everything surfaces on whatever turn happens next.",
+  "description": "Injects relevant intents, recent domain events, and ambient cross-agent activity into each configured agent's turn (before_prompt_build), and provides tools for logging activity and updating intent lifecycle. No active wake of any agent — everything surfaces on whatever turn happens next.",
   "version": "0.1.0",
   "configSchema": {
     "type": "object",
@@ -35,21 +35,9 @@
           }
         }
       },
-      "notifyExecutorIntervalMs": {
-        "type": "number",
-        "description": "Poll interval for the mechanical notify executor. Default 60000."
-      },
       "recentActivityWindowMs": {
         "type": "number",
         "description": "How far back to surface ambient-activity entries. Default 6h."
-      },
-      "openclawBin": {
-        "type": "string",
-        "description": "Path to the openclaw CLI binary. Default /opt/homebrew/bin/openclaw."
-      },
-      "fallbackNotifyChannel": {
-        "type": "string",
-        "description": "Channel used when an intent's action.channel is unset. Default bluebubbles."
       },
       "logRetentionMs": {
         "type": "number",
@@ -63,7 +51,8 @@
   },
   "contracts": {
     "tools": [
-      "log_activity"
+      "log_activity",
+      "intent_update"
     ]
   }
 }
