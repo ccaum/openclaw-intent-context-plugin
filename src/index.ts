@@ -4,12 +4,14 @@ import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { execSync } from "node:child_process";
 import * as crypto from "node:crypto";
 
 // Default values — all overridable via configSchema.
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
 const DEFAULT_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_LOG_RETENTION_MS = 48 * 60 * 60 * 1000;
+const OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
 
 function expandHome(p: string): string {
   if (p === "~") return os.homedir();
@@ -315,17 +317,17 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
             intent.triggered_by = toolCtx.agentId;
             await fs.writeFile(paths.pendingPath, JSON.stringify(pending, null, 2), "utf8");
 
-            // Wake the target agent by enqueuing a next-turn injection via the SDK API.
-            // The before_prompt_build hook will also surface the triggered intent on
-            // whatever session the agent's next turn happens on (including Discord channels).
+            // Wake the target agent via openclaw system event with --mode now for immediate wake.
+            // Use --session-key agent:${notifyAgent} (without :main suffix) so the gateway
+            // resolves the agent's active session (which may be a Discord channel, not main).
             const notifyAgent = intent.notify_agent;
             if (notifyAgent) {
               try {
                 const wakeMessage = `Intent ${params.id} triggered: ${params.message ?? ""}`;
-                await api.session.workflow.enqueueNextTurnInjection({
-                  sessionKey: `agent:${notifyAgent}`,
-                  text: wakeMessage,
-                });
+                execSync(
+                  `${OPENCLAW_BIN} system event --session-key agent:${notifyAgent} --text "${wakeMessage.replace(/"/g, '\\"')}" --mode now`,
+                  { timeout: 15000, stdio: "ignore" },
+                );
               } catch (error) {
                 // Wake failure doesn't fail the tool — injection will surface it on the target's next turn anyway.
                 console.error(`[intent-context] failed to wake agent ${notifyAgent} for intent ${params.id}:`, error);
