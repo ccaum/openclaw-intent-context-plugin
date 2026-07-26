@@ -328,7 +328,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
                 // Enqueue the system event for the target agent's session
                 api.runtime.system.enqueueSystemEvent(wakeMessage, { sessionKey });
                 // Trigger an immediate heartbeat cycle to wake the agent
-                await api.runtime.system.runHeartbeatOnce({ reason: "intent-triggered", heartbeat: { target: "last" } });
+                await api.runtime.system.runHeartbeatOnce({ reason: "intent-triggered", heartbeat: { target: "last" }, source: "cron" } as any);
                 woke = true;
               } catch (err) {
                 // Fall back to CLI shell-out if the SDK path fails
