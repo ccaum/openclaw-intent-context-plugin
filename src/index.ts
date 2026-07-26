@@ -325,12 +325,14 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
               let woke = false;
               try {
                 const sessionKey = `agent:${notifyAgent}`;
-                // Enqueue the system event for the target agent's session
+                api.logger.info(`IC-F002 wake: enqueueing system event sessionKey=${sessionKey} intentId=${params.id} notifyAgent=${notifyAgent}`);
                 api.runtime.system.enqueueSystemEvent(wakeMessage, { sessionKey });
-                // Trigger an immediate heartbeat cycle to wake the agent
-                await api.runtime.system.runHeartbeatOnce({ reason: "wake", agentId: notifyAgent, sessionKey });
+                api.logger.info(`IC-F002 wake: calling requestHeartbeat agentId=${notifyAgent} sessionKey=${sessionKey}`);
+                api.runtime.system.requestHeartbeat({ source: "other", intent: "event", reason: "intent-triggered", agentId: notifyAgent, sessionKey });
+                api.logger.info(`IC-F002 wake: requestHeartbeat queued sessionKey=${sessionKey}`);
                 woke = true;
               } catch (err) {
+                api.logger.error(`IC-F002 wake: SDK path failed: ${String(err)}`);
                 // Fall back to CLI shell-out if the SDK path fails
                 try {
                   execSync(
