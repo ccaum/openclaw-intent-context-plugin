@@ -127,7 +127,7 @@ export async function buildInjectionForAgent(
     if (watching.length > 0) {
       sections.push(
         [
-          "WATCHING FOR (pending intents in your domain — recognize a match, don't wait to be told):",
+          "WATCHING FOR (pending intents in your domain — recognize a match, don't wait to be told). Load the `intents` skill and call `intent_update` with status=\"triggered\" when you see a match:",
           ...watching.map(
             (item) => `- [${item.id}] ${item.description} — conditions: ${JSON.stringify(item.trigger?.conditions ?? {})}`,
           ),
