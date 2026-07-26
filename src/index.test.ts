@@ -212,7 +212,7 @@ describe("intent_create expires_at", () => {
     const intent = {
       id: crypto.randomUUID(),
       status: "pending",
-      trigger: { type: "transaction", data: {} },
+      trigger: { type: "transaction", conditions: {} },
       description: "Test intent",
       notify_agent: "assistant",
       action: { type: "notify", message_template: "Test intent" },
@@ -237,7 +237,7 @@ describe("intent_create expires_at", () => {
     const intent = {
       id: crypto.randomUUID(),
       status: "pending",
-      trigger: { type: "transaction", data: {} },
+      trigger: { type: "transaction", conditions: {} },
       description: "Time-sensitive intent",
       notify_agent: "assistant",
       action: { type: "notify", message_template: "Time-sensitive intent" },
@@ -377,7 +377,7 @@ describe("intent_create logic", () => {
     const intent = {
       id: crypto.randomUUID(),
       status: "pending",
-      trigger: { type: params.trigger_type, data: params.trigger_data || {} },
+      trigger: { type: params.trigger_type, conditions: params.trigger_data || {} },
       description: params.description,
       notify_agent: params.notify_agent,
       action: { type: "notify", message_template: params.description },
@@ -393,7 +393,8 @@ describe("intent_create logic", () => {
     expect(stored).toHaveLength(1);
     expect(stored[0].status).toBe("pending");
     expect(stored[0].trigger.type).toBe("transaction");
-    expect(stored[0].trigger.data).toEqual({ merchant: "Acme", min_amount: 200 });
+    expect(stored[0].trigger.conditions).toEqual({ merchant: "Acme", min_amount: 200 });
+    expect(stored[0].trigger.data).toBeUndefined();
     expect(stored[0].notify_agent).toBe("assistant");
     expect(stored[0].id).toMatch(/[0-9a-f-]{36}/);
   });
@@ -429,7 +430,7 @@ describe("intent_create logic", () => {
     const newIntent = {
       id: crypto.randomUUID(),
       status: "pending",
-      trigger: { type: "home_event", data: {} },
+      trigger: { type: "home_event", conditions: {} },
       description: "Someone arrived home",
       notify_agent: "home",
       action: { type: "notify", message_template: "Someone arrived home" },

@@ -425,7 +425,7 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
             status: "pending",
             trigger: {
               type: params.trigger_type,
-              data: params.trigger_data || {},
+              conditions: params.trigger_data || {},
             },
             description: params.description,
             notify_agent: params.notify_agent,
