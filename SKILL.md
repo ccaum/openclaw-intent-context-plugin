@@ -1,97 +1,175 @@
 ---
 name: intent-context
-description: Cross-agent awareness and intent lifecycle management. Load when you see WATCHING FOR, ACTION NEEDED, or RECENT ACTIVITY in your context, or when you need to log activity or update an intent.
+description: "Create, check, and manage deferred intents — actions triggered by future events (email, transactions, home events, device presence, calendar, or custom conditions). Use when a user says 'let me know when...', 'remind me if...', 'when X happens do Y', or when processing events that might match a pending intent."
 ---
 
-# Intent Context
+# Intent System
 
-You have access to two tools and three context injection blocks that let you coordinate with other agents without active messaging.
+Intents are deferred actions: "when [trigger], do [action]." They live in a shared file so any agent can create them and any event-processing agent can match them. The intent-context plugin surfaces pending intents to agents via WATCHING FOR injection and delivers triggered intents via ACTION NEEDED injection.
+
+## When to Use
+
+### Creating intents
+The user says something that implies a future trigger:
+- "Let me know when the Costco refund hits"
+- "When I get the Amazon shipping email, forward tracking to Laura"
+- "Remind me to ask about X at my next appointment with Dr. Kim"
+- "Install the app when I get home"
+
+### Checking intents
+You're processing an event (email arrived, transaction synced, person detected, device came online) and should check if any pending intent matches. The intent-context plugin injects WATCHING FOR into your context automatically — you don't need to read pending.json manually. Just check if the event you're processing matches any of the watching-for intents.
+
+## Tools
+
+### intent_create
+
+Create a new pending intent. The trigger type must be registered in the plugin's `triggerTypes` config.
+
+```
+intent_create(trigger_type: string, description: string, notify_agent: string, trigger_data?: object, action_type?: "notify" | "agent_task", action_message_template?: string)
+```
+
+- `trigger_type` — must be a registered type (use `list_trigger_types` to see valid types)
+- `description` — human-readable description of what condition to watch for
+- `notify_agent` — the agent id that should be notified when triggered
+- `trigger_data` — optional structured data describing what to watch for (e.g. `{"merchant": "Acme", "min_amount": 200}`)
+- `action_type` — `"notify"` (default) wakes the target agent. `"agent_task"` surfaces it for the agent to decide
+- `action_message_template` — optional message template with `{{key}}` placeholders filled from trigger_data
+
+If the trigger type is not in the registry, the tool returns an error listing all valid types.
+
+### intent_update
+
+Update the lifecycle of an intent. Trigger an intent when you see a condition match, or complete it when you've acted on it.
+
+```
+intent_update(id: string, status: "triggered" | "completed", message?: string, trigger_data?: object)
+```
+
+- `id` — the intent ID to update
+- `status` — `"triggered"` (condition met, wake target agent) or `"completed"` (action taken, close out)
+- `message` — what you saw and why it matched (required when triggering)
+- `trigger_data` — optional structured data for the target agent
+
+When status is `"triggered"`, the plugin stores your message and data on the intent and wakes the target agent with a system event. The target agent sees the trigger in its ACTION NEEDED block on its next turn.
+
+### list_trigger_types
+
+List the valid trigger types that can be used when creating intents.
+
+```
+list_trigger_types()
+```
+
+Returns a map of trigger type strings to their descriptions. Use this before calling `intent_create` if you're not sure what trigger type to use.
+
+### log_activity
+
+Append a short note about what you're doing to the shared activity log. Other agents see it in their RECENT ACTIVITY block on their next turn. Does not notify or wake anyone.
+
+```
+log_activity(text: string, agent?: string)
+```
+
+Use this when you complete a significant task or observe something noteworthy. Don't use it for routine work or urgent notifications (use `intent_update` or direct messaging instead).
 
 ## Context Injection Blocks
 
 You may see these blocks at the top of your turn. They are background context, not user requests.
 
-### WATCHING FOR
-Pending intents that match your configured `watchedTriggerTypes`. These are conditions the system has asked you to watch for as part of your normal operation. When you see something in your work that matches a watching-for intent, trigger it using `intent_update`.
+- **WATCHING FOR** — pending intents matching your configured `watchedTriggerTypes`. When you see something in your work that matches a watching-for intent, trigger it using `intent_update`.
+- **ACTION NEEDED** — triggered intents assigned to you. Another agent recognized a condition and triggered an intent for you to act on. Read the message from the triggering agent, check the data, and take whatever action the intent requires. When you're done, call `intent_update` with status="completed".
+- **RECENT ACTIVITY** — recent `log_activity` entries from other agents. Background awareness of what's happening across the system.
 
-Example: You're a transaction monitoring agent. You see "WATCHING FOR: refund from Acme over $200". While processing transactions, you notice a $500 refund from Acme. You call `intent_update` to trigger the intent.
+## Trigger Types
 
-### ACTION NEEDED
-Triggered intents assigned to you. Another agent recognized a condition and triggered an intent for you to act on. Read the message from the triggering agent, check the data, and take whatever action the intent requires. When you're done, call `intent_update` with status="completed".
+Trigger types are defined in the intent-context plugin's `triggerTypes` config. Common types:
 
-Example: You're a personal assistant. You see "ACTION NEEDED: refund received — From Roger: 'Refund of $500 from Acme posted'. You decide to notify your user and mark the intent complete.
-
-### RECENT ACTIVITY
-Recent actions taken by other agents on the system. This is background awareness — not a request for you to do anything. Use it to understand what's happening across the system and decide if any of it is relevant to your user or your current task.
-
-## Tools
-
-### log_activity
-```
-log_activity(text: string, agent?: string)
+**transaction** — Bank or payment transactions
+```json
+{"type": "transaction", "conditions": {"merchant": "Costco", "direction": "credit"}}
 ```
 
-Append a short note about what you're doing to the shared activity log. Other agents will see it in their RECENT ACTIVITY block on their next turn. This does not notify or wake anyone.
-
-Use this when:
-- You complete a significant task (shipped a feature, deployed a fix, finished a review)
-- You start work on something other agents should know about
-- You observe something noteworthy (a system event, an error, a status change)
-
-Don't use this for:
-- Routine work (reading a file, running a test)
-- Things only you care about
-- Urgent notifications (use intent_update or direct messaging instead)
-
-The optional `agent` parameter is for external systems calling via /tools/invoke that don't have an agent session.
-
-### intent_update
-```
-intent_update(id: string, status: "triggered" | "completed", message?: string, trigger_data?: object)
+**email** — Inbound email matching criteria
+```json
+{"type": "email", "conditions": {"sender_contains": "amazon", "subject_contains": "shipped"}}
 ```
 
-Update the lifecycle of an intent.
-
-**When to trigger (status="triggered"):**
-You see a WATCHING FOR intent in your context and you recognize that the condition has been met in your work. Call `intent_update` with:
-- `id` — the intent ID
-- `status` — "triggered"
-- `message` — what you saw and why it matches (the target agent reads this)
-- `trigger_data` — optional structured data the target agent needs
-
-This stores your message on the intent and wakes the target agent so they can act on it.
-
-**When to complete (status="completed"):**
-You see an ACTION NEEDED intent in your context, you've taken the action it required, and you want to close it out. Call `intent_update` with:
-- `id` — the intent ID
-- `status` — "completed"
-
-This marks the intent as done so it stops appearing in ACTION NEEDED.
-
-### intent_create
-```
-intent_create(trigger_type: string, description: string, notify_agent: string, trigger_data?: object, action_type?: "notify" | "agent_task", action_message_template?: string, expires_at?: string)
+**home_event** — Home automation events
+```json
+{"type": "home_event", "conditions": {"person": "Carl", "event": "arrived"}}
 ```
 
-Create a new pending intent for the system to watch for. The trigger type must be a registered type (use `list_trigger_types` to see valid types).
+**device_presence** — Device state changes
+```json
+{"type": "device_presence", "conditions": {"device": "Carl's iPhone", "state": "available"}}
+```
 
-- `trigger_type` — must be a registered type
-- `description` — human-readable description of what condition to watch for
-- `notify_agent` — the agent id that should be notified when triggered
-- `trigger_data` — optional structured data describing what to watch for
-- `action_type` — `"notify"` (default) or `"agent_task"`
-- `action_message_template` — optional message template with `{{key}}` placeholders
-- `expires_at` — optional ISO 8601 timestamp. Defaults to 24 hours from creation. Intents that expire before being triggered are automatically pruned.
+**calendar** — Calendar events
+```json
+{"type": "calendar", "conditions": {"title_contains": "Dr. Kim"}}
+```
 
-## How Agents Coordinate
+**custom** — Any condition, evaluated by LLM
+```json
+{"type": "custom", "conditions": {"description": "Laura texts about dinner plans"}}
+```
 
-The intent system lets agents coordinate without direct messaging:
+For custom triggers: pass the event description + the condition to the LLM and ask "Does this event match this condition? Yes or no." Only trigger on confident yes.
 
-1. Agent A asks the system to watch for a condition (intent created in pending.json)
-2. Agent B sees the WATCHING FOR intent in its context during normal work
-3. Agent B recognizes the condition and calls `intent_update` to trigger it
-4. The plugin wakes Agent A (the notify_agent) with a system event
-5. Agent A sees ACTION NEEDED on its next turn with Agent B's message
-6. Agent A takes action and calls `intent_update` to complete the intent
+Use `list_trigger_types` to see what's registered in your installation.
 
-This works even when agents can't message each other directly, don't share a channel, or the target agent isn't currently running.
+## Workflow
+
+### Creating an intent
+
+1. Call `list_trigger_types` if you're not sure what trigger type to use
+2. Call `intent_create` with the trigger type, description, and notify_agent
+3. Confirm to the user: "I'll watch for that and let you know."
+
+### Matching an intent (event processing)
+
+When you process an event that could match an intent:
+
+1. Check the WATCHING FOR block in your context for pending intents
+2. For each matching type, evaluate conditions against the current event
+3. If match found, call `intent_update(id, "triggered", message="what you saw", trigger_data={...})`
+4. The plugin wakes the target agent — you don't need to message them yourself
+
+### Acting on a triggered intent
+
+When you see ACTION NEEDED in your context:
+
+1. Read the triggering agent's message and trigger_data
+2. Take whatever action the intent requires (notify the user, forward content, execute a task)
+3. Call `intent_update(id, "completed")` to close it out
+
+## File Locations
+
+```
+~/.openclaw/intents/
+├── pending.json          # Active intents (managed by tools, don't edit manually)
+├── archive.json          # Completed/expired (append-only)
+└── recent-activity.jsonl # Activity log (managed by log_activity tool)
+```
+
+Do not read or write these files directly. Use the tools (`intent_create`, `intent_update`, `log_activity`).
+
+## Examples
+
+### Creating: "Let me know when the Costco refund hits"
+
+Call `intent_create`:
+- trigger_type: "transaction"
+- description: "Notify Carl when Costco refund posts"
+- notify_agent: "silas" (your agent id)
+- trigger_data: {"merchant": "Costco", "direction": "credit"}
+- action_message_template: "Your Costco refund just posted: {{amount}}"
+
+Confirm to the user: "I'll watch for that and let you know."
+
+### Matching: Finance agent sees a Costco credit
+
+The finance agent sees WATCHING FOR in its context: "Notify Carl when Costco refund posts." While processing transactions, it spots a Costco credit. It calls `intent_update(id, "triggered", message="Costco refund of $47.23 posted", trigger_data={"amount": "$47.23", "date": "2026-04-05"})`.
+
+The plugin wakes the assistant agent. The assistant sees ACTION NEEDED with the finance agent's message, notifies the user, and calls `intent_update(id, "completed")`.
