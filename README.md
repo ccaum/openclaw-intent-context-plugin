@@ -1,10 +1,43 @@
 # OpenClaw Intent Context Plugin
 
+[![ClawHub](https://img.shields.io/badge/ClawHub-intent--context-8B5CF6)](https://clawhub.ai/packages/openclaw-plugin-intent-context)
+
 The Intent Context plugin gives OpenClaw agents passive awareness of what other agents are doing and lets them watch for future events as part of their normal operation. It injects recent activity from other agents and pending conditions an agent should be watching for into each agent's turn as it happens, so agents can coordinate and react without being explicitly told. When an agent recognizes a watched condition and triggers an intent, the plugin wakes the target agent so it can act on it. No agent is ever actively woken unnecessarily — everything surfaces on whatever turn happens next.
 
 Without this plugin, OpenClaw agents operate in isolation. An orchestration agent can't see when a coder finishes a build, a QA agent passes or fails a test, or an operations agent deploys a fix — unless someone explicitly sends a message each time. But agents rarely know what's worth notifying another agent about, so coordination breaks down or requires manual handoffs. Personal assistant agents face the same problem: they can't decide when to mention relevant activity from other agents to their user without being prompted, because they don't have that activity in context. Beyond cross-agent awareness, asking an agent to watch for a future event and react to it required a cron job to continuously poll for the condition. You couldn't tell your assistant agent "let me know when the refund hits my bank account" and have a monitoring agent watch for that condition as part of its normal routine and take action when it sees the match — because there was no mechanism to surface the watch condition to the monitoring agent in the first place, and no way for the monitoring agent to hand the result back to the assistant without direct messaging.
 
 The plugin solves both problems through passive context injection and intent lifecycle tools. A `before_prompt_build` hook reads recent activity from other agents and pending watch conditions from shared log files and injects them into whichever agent turn is already happening — so an orchestration agent sees when the coder shipped, a personal assistant knows what other agents have been doing, and a monitoring agent sees what conditions it should be watching for in its normal flow. Any agent or external system can append to the activity log via a simple HTTP call, so home automation pipelines, transaction monitors, and email processors can surface events the same way agents do. When an agent recognizes a condition and triggers an intent using the `intent_update` tool, the plugin wakes the target agent with a system event so it sees the trigger on its next turn — the monitoring agent doesn't need to know how to reach the assistant, and the assistant doesn't need to be running when the condition is met. The target agent reads the triggering agent's message, takes action, and marks the intent complete.
+
+## Installation
+
+```bash
+openclaw plugins install clawhub:openclaw-plugin-intent-context
+```
+
+Then add it to your `openclaw.json` config under `plugins.entries`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "intent-context": {
+        "enabled": true,
+        "config": {
+          "agents": {
+            "pax": {
+              "watchedTriggerTypes": ["bank_transaction", "email"],
+              "actorFor": ["silas"],
+              "ambientScope": "all"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+See [Configuration](#configuration) below for all options.
 
 ## Tools
 

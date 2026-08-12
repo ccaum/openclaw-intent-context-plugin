@@ -57,6 +57,7 @@
   "activation": {
     "onStartup": true
   },
+  "skills": ["./SKILL.md"],
   "contracts": {
     "tools": [
       "log_activity",
