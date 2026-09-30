@@ -11,6 +11,8 @@ import * as crypto from "node:crypto";
 const DEFAULT_INTENTS_DIR = "~/.openclaw/intents";
 const DEFAULT_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_LOG_RETENTION_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_ACTIVITY_MAX_ENTRY_CHARS = 400;
+const DEFAULT_ACTIVITY_MAX_TOTAL_CHARS = 6000;
 const OPENCLAW_BIN = "/opt/homebrew/bin/openclaw";
 
 function expandHome(p: string): string {
@@ -41,6 +43,8 @@ export const ConfigSchema = Type.Object(
     }),
     recentActivityWindowMs: Type.Optional(Type.Number({ description: "How far back to surface ambient-activity entries. Default 6h." })),
     logRetentionMs: Type.Optional(Type.Number({ description: "Retention window for pruning recent-activity.jsonl. Default 48h." })),
+    activityMaxEntryChars: Type.Optional(Type.Number({ description: "Max characters per ambient-activity entry before truncation. Default 400." })),
+    activityMaxTotalChars: Type.Optional(Type.Number({ description: "Max total characters for the RECENT ACTIVITY section. Default 6000." })),
   },
   { additionalProperties: false },
 );
@@ -101,10 +105,43 @@ function withinWindow(timestamp: unknown, windowMs: number, now: number): boolea
   return now - ts <= windowMs;
 }
 
+function truncateEntryText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const suffix = "…(truncated)";
+  return text.slice(0, Math.max(0, maxChars - suffix.length)) + suffix;
+}
+
+function formatActivitySection(
+  entries: Record<string, any>[],
+  activityLogPath: string,
+  maxEntryChars: number,
+  maxTotalChars: number,
+): string {
+  const sorted = [...entries].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  const header = "RECENT ACTIVITY from other agents (background context, not urgent):";
+  const lines: string[] = [header];
+  let usedChars = header.length;
+  let includedCount = 0;
+  for (const entry of sorted) {
+    const text = truncateEntryText(String(entry.text ?? ""), maxEntryChars);
+    const line = `- [${entry.agent}, ${entry.timestamp}] ${text}`;
+    const addedChars = line.length + 1; // + newline joining it to the section
+    if (includedCount > 0 && usedChars + addedChars > maxTotalChars) break;
+    lines.push(line);
+    usedChars += addedChars;
+    includedCount++;
+  }
+  const omittedCount = sorted.length - includedCount;
+  if (omittedCount > 0) {
+    lines.push(`(+${omittedCount} older entries omitted; full log: ${activityLogPath})`);
+  }
+  return lines.join("\n");
+}
+
 export async function buildInjectionForAgent(
   agentConfig: AgentAwarenessConfig,
   paths: IntentPaths,
-  windows: { recentActivityWindowMs: number },
+  windows: { recentActivityWindowMs: number; activityMaxEntryChars?: number; activityMaxTotalChars?: number },
   now: number = Date.now(),
   triggerTypes: Record<string, string> = {},
 ): Promise<string | null> {
@@ -171,10 +208,12 @@ export async function buildInjectionForAgent(
     });
     if (recent.length > 0) {
       sections.push(
-        [
-          "RECENT ACTIVITY from other agents (background context, not urgent):",
-          ...recent.map((entry) => `- [${entry.agent}, ${entry.timestamp}] ${entry.text}`),
-        ].join("\n"),
+        formatActivitySection(
+          recent,
+          paths.activityLogPath,
+          windows.activityMaxEntryChars ?? DEFAULT_ACTIVITY_MAX_ENTRY_CHARS,
+          windows.activityMaxTotalChars ?? DEFAULT_ACTIVITY_MAX_TOTAL_CHARS,
+        ),
       );
     }
   }
@@ -222,6 +261,8 @@ const pluginEntry: ReturnType<typeof definePluginEntry> = definePluginEntry({
     const paths = resolvePaths(config);
     const windows = {
       recentActivityWindowMs: config.recentActivityWindowMs ?? DEFAULT_ACTIVITY_WINDOW_MS,
+      activityMaxEntryChars: config.activityMaxEntryChars ?? DEFAULT_ACTIVITY_MAX_ENTRY_CHARS,
+      activityMaxTotalChars: config.activityMaxTotalChars ?? DEFAULT_ACTIVITY_MAX_TOTAL_CHARS,
     };
     api.on("before_prompt_build", async (_event, ctx) => {
       const agentId = ctx.agentId;

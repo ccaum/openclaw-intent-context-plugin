@@ -121,6 +121,86 @@ describe("buildInjectionForAgent", () => {
     expect(all).toContain("--- end intent-context plugin ---");
   });
 
+  it("orders ambient activity newest-first", async () => {
+    const older = new Date(now - 5 * 60 * 1000).toISOString();
+    const newer = new Date(now - 60 * 1000).toISOString();
+    await fs.writeFile(
+      paths.activityLogPath,
+      [
+        JSON.stringify({ agent: "pax", text: "older entry", timestamp: older }),
+        JSON.stringify({ agent: "pax", text: "newer entry", timestamp: newer }),
+      ].join("\n"),
+    );
+    const result = await buildInjectionForAgent({ ambientScope: "all" }, paths, windows, now);
+    const newerIdx = result!.indexOf("newer entry");
+    const olderIdx = result!.indexOf("older entry");
+    expect(newerIdx).toBeGreaterThan(-1);
+    expect(olderIdx).toBeGreaterThan(-1);
+    expect(newerIdx).toBeLessThan(olderIdx);
+  });
+
+  it("truncates a single entry's text past activityMaxEntryChars", async () => {
+    const ts = new Date(now - 60 * 1000).toISOString();
+    const longText = "x".repeat(500);
+    await fs.writeFile(
+      paths.activityLogPath,
+      JSON.stringify({ agent: "pax", text: longText, timestamp: ts }) + "\n",
+    );
+    const result = await buildInjectionForAgent(
+      { ambientScope: "all" },
+      paths,
+      { ...windows, activityMaxEntryChars: 400 },
+      now,
+    );
+    expect(result).toContain("…(truncated)");
+    expect(result).not.toContain(longText);
+    // truncated entry line should be close to the 400-char budget, not the full 500
+    const entryLine = result!.split("\n").find((l) => l.includes("…(truncated)"))!;
+    expect(entryLine.length).toBeLessThan(450);
+  });
+
+  it("respects activityMaxTotalChars and appends an omitted-count line", async () => {
+    const entries: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const ts = new Date(now - (i + 1) * 1000).toISOString();
+      entries.push(JSON.stringify({ agent: "pax", text: `entry number ${i}`.padEnd(100, " "), timestamp: ts }));
+    }
+    await fs.writeFile(paths.activityLogPath, entries.join("\n") + "\n");
+    const result = await buildInjectionForAgent(
+      { ambientScope: "all" },
+      paths,
+      { ...windows, activityMaxTotalChars: 1000 },
+      now,
+    );
+    expect(result).toMatch(/\(\+\d+ older entries omitted; full log: .*recent-activity\.jsonl\)/);
+    // the newest entry (index 0, timestamp closest to now) must be present
+    expect(result).toContain("entry number 0");
+  });
+
+  it("produces a bounded section for a 200-entry, ~150KB input with the newest entry first", async () => {
+    const entries: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      const ts = new Date(now - (i + 1) * 1000).toISOString();
+      entries.push(JSON.stringify({ agent: "pax", text: `entry ${i} `.padEnd(750, "y"), timestamp: ts }));
+    }
+    const raw = entries.join("\n") + "\n";
+    expect(raw.length).toBeGreaterThan(150_000);
+    await fs.writeFile(paths.activityLogPath, raw);
+
+    const result = await buildInjectionForAgent({ ambientScope: "all" }, paths, windows, now);
+    expect(result).not.toBeNull();
+
+    // Extract just the RECENT ACTIVITY section
+    const sectionStart = result!.indexOf("RECENT ACTIVITY");
+    const section = result!.slice(sectionStart);
+    // default activityMaxTotalChars is 6000; allow slack for the omitted-count line
+    expect(section.length).toBeLessThan(6500);
+
+    const lines = section.split("\n").filter((l) => l.startsWith("- ["));
+    expect(lines[0]).toContain("entry 0 ");
+    expect(section).toMatch(/older entries omitted/);
+  });
+
   it("case-insensitive agent config lookup: capitalized agentId matches lowercase config key", async () => {
     // Simulates the before_prompt_build handler's lookup logic:
     //   config.agents?.[agentId] ?? config.agents?.[agentId.toLowerCase()]
